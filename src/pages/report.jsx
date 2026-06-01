@@ -1,56 +1,450 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
+import {
+  BarChart, Bar,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+} from "recharts";
+import {
+  C, GRADE_HEX, GRADE_CLS, MONTH_NAMES,
+  countADRs, countG3plus, buildBreakdown, calcStats, getCellShade,
+  Section, SectionHead, MultiRegimenSelect, GradePill, ProgressBar,
+  ChartTooltip, EmptyChart,
+  MonthlyRateCharts, MonthlyCountCharts,
+  SymptomMatrix, MonthlySummaryTable,
+} from "./ReportTokens";
 
-const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const MAIN_SYMPTOMS = ["Neuropathy","Nausea","Vomiting","Diarrhea"];
-const SYMPTOM_KEY_TO_LABEL = { neuropathy:"Neuropathy", nausea:"Nausea", vomiting:"Vomiting", diarrhea:"Diarrhea" };
+/* ─── Palette aligned with Dashboard ───────────────────────
+   Primary navy  : #0f4c81
+   Mid blue      : #2d7dd2
+   Slate bg      : #f8fafc
+   Card border   : #e2e8f0
+   Text head     : #0f172a
+   Text body     : #334155
+   Text muted    : #64748b
+   Text faint    : #94a3b8
+──────────────────────────────────────────────────────────── */
 
-function getCellColor(count) {
-  if (!count) return "";
-  if (count >= 10) return "bg-red-100 text-red-700 font-bold";
-  if (count >= 5)  return "bg-orange-100 text-orange-700 font-semibold";
-  return "bg-blue-50 text-blue-700 font-semibold";
+/* ════════════════════════════════════════════════════════════
+   DONUT CHART  (SVG, no lib dependency)
+════════════════════════════════════════════════════════════ */
+function DonutChart({ data, size = 200 }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  if (total === 0) return <EmptyChart />;
+
+  const R = size / 2;
+  const cx = R, cy = R;
+  const outerR = R - 10;
+  const innerR = outerR * 0.58;
+
+  let startAngle = -Math.PI / 2;
+  const slices = data.map(d => {
+    const angle = (d.value / total) * 2 * Math.PI;
+    const slice = { ...d, startAngle, endAngle: startAngle + angle };
+    startAngle += angle;
+    return slice;
+  });
+
+  const arc = (sa, ea, r1, r2) => {
+    const x1 = cx + r2 * Math.cos(sa), y1 = cy + r2 * Math.sin(sa);
+    const x2 = cx + r1 * Math.cos(sa), y2 = cy + r1 * Math.sin(sa);
+    const x3 = cx + r1 * Math.cos(ea), y3 = cy + r1 * Math.sin(ea);
+    const x4 = cx + r2 * Math.cos(ea), y4 = cy + r2 * Math.sin(ea);
+    const lg = ea - sa > Math.PI ? 1 : 0;
+    return `M${x1},${y1} L${x2},${y2} A${r1},${r1} 0 ${lg} 1 ${x3},${y3} L${x4},${y4} A${r2},${r2} 0 ${lg} 0 ${x1},${y1} Z`;
+  };
+
+  const [hovered, setHovered] = useState(null);
+
+  return (
+    <div className="flex items-center gap-5 flex-wrap">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="flex-shrink-0">
+        {slices.map((s, i) => (
+          <path key={i}
+            d={arc(s.startAngle, s.endAngle, innerR, outerR)}
+            fill={s.color}
+            opacity={hovered === null || hovered === i ? 1 : 0.3}
+            stroke="white" strokeWidth={2}
+            onMouseEnter={() => setHovered(i)}
+            onMouseLeave={() => setHovered(null)}
+            style={{ transition:"opacity 0.15s", cursor:"default" }}
+          />
+        ))}
+        <circle cx={cx} cy={cy} r={innerR - 2} fill="white" />
+        <text x={cx} y={cy - 8} textAnchor="middle"
+          fontSize={hovered !== null ? 22 : 26} fontWeight="700"
+          fill="#0f172a" fontFamily="'IBM Plex Mono', monospace">
+          {hovered !== null ? slices[hovered].value : total}
+        </text>
+        <text x={cx} y={cy + 11} textAnchor="middle" fontSize={10}
+          fill="#94a3b8" fontFamily="sans-serif">
+          {hovered !== null ? slices[hovered].label : "events"}
+        </text>
+        {hovered !== null && (
+          <text x={cx} y={cy + 26} textAnchor="middle" fontSize={11}
+            fill={slices[hovered].color} fontWeight="700" fontFamily="sans-serif">
+            {Math.round((slices[hovered].value / total) * 100)}%
+          </text>
+        )}
+      </svg>
+      <div className="flex flex-col gap-2.5 min-w-0">
+        {slices.map((s, i) => (
+          <div key={i} className="flex items-center gap-2 text-xs"
+            onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}
+            style={{ opacity: hovered === null || hovered === i ? 1 : 0.3, transition:"opacity 0.15s", cursor:"default" }}>
+            <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: s.color }} />
+            <span className="text-[#475569] font-medium truncate">{s.label}</span>
+            <span className="ml-auto font-bold text-[#0f172a] pl-2"
+                  style={{ fontFamily:"'IBM Plex Mono', monospace" }}>{s.value}</span>
+            <span className="text-[#94a3b8] w-8 text-right">{Math.round((s.value / total) * 100)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-function countADRsInRecord(rec) {
-  let n = 0;
-  Object.values(rec.symptoms || {}).forEach((g) => { if (g) n++; });
-  (rec.otherSymptoms || []).forEach((s) => { if (s.grade) n++; });
-  return n;
-}
-function countGrade3PlusInRecord(rec) {
-  let n = 0;
-  Object.values(rec.symptoms || {}).forEach((g) => { if (g >= 3) n++; });
-  (rec.otherSymptoms || []).forEach((s) => { if (s.grade >= 3) n++; });
-  return n;
-}
-function hasIntervention(rec) {
-  return !!(rec.intervention && rec.intervention.trim());
-}
-// ─────────────────────────────────────────────────────────────────────────────
+/* ════════════════════════════════════════════════════════════
+   MONTHLY RATE BAR CHARTS  →  moved to ReportTokens.jsx
+════════════════════════════════════════════════════════════ */
 
+/* ════════════════════════════════════════════════════════════
+   MONTHLY COUNT CHARTS  →  moved to ReportTokens.jsx
+════════════════════════════════════════════════════════════ */
+
+/* ── Grade Distribution (Donut) ──────────────────────────── */
+function GradeDist({ records }) {
+  const dist = useMemo(() => {
+    const d = { 1:0, 2:0, 3:0, 4:0, 5:0 };
+    records.forEach(rec => {
+      Object.values(rec.symptoms || {}).forEach(v => {
+        const g = typeof v === "object" ? v?.grade : v;
+        if (g && d[g] !== undefined) d[g]++;
+      });
+    });
+    return d;
+  }, [records]);
+
+  const GRADE_LABELS = {
+    1:"Grade 1 — Mild",
+    2:"Grade 2 — Moderate",
+    3:"Grade 3 — Severe",
+    4:"Grade 4 — Life-threatening",
+    5:"Grade 5 — Fatal",
+  };
+
+  const data = [1, 2, 3, 4, 5]
+    .filter(g => dist[g] > 0)
+    .map(g => ({ label: GRADE_LABELS[g], value: dist[g], color: GRADE_HEX[g] }));
+
+  return (
+    <Section>
+      <SectionHead title="Grade Distribution" sub="สัดส่วน CTCAE Grade" />
+      <div className="p-5">
+        <DonutChart data={data} size={180} />
+      </div>
+    </Section>
+  );
+}
+
+/* ── Symptom Matrix + Monthly Summary Table  →  moved to ReportTokens.jsx ── */
+
+/* ── Compare View ────────────────────────────────────────── */
+function CompareView({ allRegimens, groups, setGroups, allRecords }) {
+  /* Muted group palette — matches overall restrained tone */
+  const GROUP_META = [
+    { key:0, label:"กลุ่ม A", accentColor:"blue",   border:"border-[#bfdbfe]",   head:"text-[#0f4c81]",   dot:"bg-[#0f4c81]",   barFill:"#0f4c81" },
+    { key:1, label:"กลุ่ม B", accentColor:"violet", border:"border-[#c7c7e8]",   head:"text-[#5b5ea6]",   dot:"bg-[#5b5ea6]",   barFill:"#5b5ea6" },
+    { key:2, label:"กลุ่ม C", accentColor:"teal",   border:"border-[#a5f3fc]",   head:"text-[#0e7490]",   dot:"bg-[#0e7490]",   barFill:"#0e7490" },
+  ];
+
+  const setGroupRegimens = (idx, regimens) =>
+    setGroups(prev => prev.map((g, i) => i === idx ? { ...g, regimens } : g));
+
+  const groupData = useMemo(() => groups.map(g => {
+    const recs  = allRecords.filter(r => g.regimens.includes(r.regimen));
+    const stats = calcStats(recs);
+    return { recs, stats };
+  }), [groups, allRecords]);
+
+  const activeGroups = groups
+    .map((g, i) => ({ ...g, ...groupData[i], meta: GROUP_META[i] }))
+    .filter(g => g.regimens.length > 0);
+  const ready = activeGroups.length >= 2;
+
+  const allNames = useMemo(() => {
+    const s = new Set();
+    activeGroups.forEach(g => Object.keys(g.stats.breakdown).forEach(n => s.add(n)));
+    return Array.from(s).sort();
+  }, [activeGroups]);
+
+  const gradeData = [1, 2, 3, 4, 5].map(g => {
+    const obj = { grade: `G${g}` };
+    activeGroups.forEach((ag, i) => {
+      const bd = ag.stats.breakdown;
+      let cnt = 0;
+      Object.values(bd).forEach(v => { if (typeof v === "object") cnt += (v[g] || 0); });
+      obj[`G${i}`] = cnt;
+    });
+    return obj;
+  });
+
+  const METRIC_KEYS = [
+    { label:"Visits",               get: s => s.visits,      lower:false },
+    { label:"ADR Events",           get: s => s.totalADR,    lower:true  },
+    { label:"ADR / Visit",          get: s => s.adrRate,     lower:true  },
+    { label:"Visits ที่พบ ADR (%)", get: s => s.adrPct+"%",  lower:true  },
+    { label:"Severe ≥G3",           get: s => s.g3plus,      lower:true  },
+    { label:"G3 /100 Visit",        get: s => s.g3Per100,    lower:true  },
+  ];
+
+  const cmpChip = (val, rank, total) => {
+    const isBest  = rank === 0;
+    const isWorst = rank === total - 1 && total > 1;
+    const cls = isWorst ? "bg-[#fff1f2] text-[#9f1239] border-[#fecdd3]"
+              : isBest  ? "bg-[#f0fdf4] text-[#166534] border-[#bbf7d0]"
+              :            "bg-[#f8fafc] text-[#475569] border-[#e2e8f0]";
+    return (
+      <span className={`inline-flex items-center justify-center px-3 py-1.5 rounded-lg text-sm font-semibold border min-w-[52px] ${cls}`}
+            style={{ fontFamily:"'IBM Plex Mono', monospace" }}>
+        {val}
+      </span>
+    );
+  };
+
+  const usedByOthers = (selfIdx) => groups.flatMap((g, i) => i !== selfIdx ? g.regimens : []);
+
+  return (
+    <div className="space-y-5">
+      {/* Group selector cards */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {GROUP_META.map((meta, idx) => {
+          const g = groups[idx];
+          return (
+            <div key={idx} className={`bg-white border ${meta.border} rounded-xl p-4 shadow-sm`}>
+              <div className="flex items-center justify-between mb-3">
+                <p className={`text-[11px] font-bold ${meta.head} uppercase tracking-widest`}>{meta.label}</p>
+                {g.regimens.length > 0 && (
+                  <button onClick={() => setGroupRegimens(idx, [])}
+                    className="text-[11px] text-[#94a3b8] hover:text-[#be123c] font-semibold transition-colors
+                               px-1.5 py-0.5 rounded hover:bg-[#fff1f2]">
+                    ล้าง
+                  </button>
+                )}
+              </div>
+              <MultiRegimenSelect
+                values={g.regimens}
+                onChange={vals => setGroupRegimens(idx, vals)}
+                options={allRegimens.filter(r => !usedByOthers(idx).includes(r))}
+                placeholder={`เพิ่มสูตรยาใน${meta.label}...`}
+                accentColor={meta.accentColor}
+              />
+              {g.regimens.length > 0 && (
+                <p className="mt-2 text-[11px] font-medium" style={{ color: meta.barFill }}>
+                  {groupData[idx].recs.length} visits
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {!ready && (
+        <div className="bg-white rounded-xl border border-[#e2e8f0] shadow-sm p-16 text-center">
+          <div className="w-12 h-12 bg-[#f1f5f9] rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6 text-[#94a3b8]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/>
+            </svg>
+          </div>
+          <p className="text-sm font-semibold text-[#475569]">เลือกสูตรยาอย่างน้อย 2 กลุ่มเพื่อเปรียบเทียบ</p>
+          <p className="text-xs text-[#94a3b8] mt-1">แต่ละกลุ่มสามารถเลือกสูตรยาได้หลายตัว</p>
+        </div>
+      )}
+
+      {ready && (
+        <>
+          {/* Legend */}
+          <div className="flex items-center gap-5 px-1 flex-wrap">
+            {activeGroups.map((ag, i) => (
+              <span key={i} className="flex items-center gap-2 text-xs font-semibold" style={{ color: ag.meta.barFill }}>
+                <span className="w-4 h-1.5 rounded-full inline-block" style={{ background: ag.meta.barFill }} />
+                {ag.regimens.join(" + ")}
+                <span className="font-normal text-[#94a3b8]">({ag.recs.length} visits)</span>
+              </span>
+            ))}
+            <span className="ml-auto flex gap-3 text-xs text-[#94a3b8]">
+              <span className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-[#fff1f2] border border-[#fecdd3] inline-block" />สูงสุด
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-[#f0fdf4] border border-[#bbf7d0] inline-block" />ต่ำสุด
+              </span>
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            {/* Key Metrics */}
+            <Section>
+              <SectionHead title="Key Metrics" sub="เปรียบเทียบตัวชี้วัดหลัก" />
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-[#f8fafc] border-b border-[#e2e8f0]">
+                      <th className="text-left px-4 py-2.5 font-bold text-[#64748b] uppercase tracking-wide w-32">ตัวชี้วัด</th>
+                      {activeGroups.map((ag, i) => (
+                        <th key={i} className="text-center px-3 py-2.5 font-bold" style={{ color: ag.meta.barFill }}>
+                          {ag.meta.label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#f1f5f9]">
+                    {METRIC_KEYS.map(({ label, get, lower }) => {
+                      const vals   = activeGroups.map(ag => get(ag.stats));
+                      const nums   = vals.map(v => parseFloat(v));
+                      const valid  = nums.every(n => !isNaN(n));
+                      const sorted = valid ? [...nums].sort((a, b) => lower ? a - b : b - a) : [];
+                      const getRank = (v) => valid ? sorted.indexOf(parseFloat(v)) : -1;
+                      return (
+                        <tr key={label} className="hover:bg-[#f8fafc]">
+                          <td className="px-4 py-2.5 font-medium text-[#475569]">{label}</td>
+                          {activeGroups.map((ag, i) => (
+                            <td key={i} className="text-center px-3 py-2">
+                              {cmpChip(get(ag.stats), getRank(get(ag.stats)), activeGroups.length)}
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Section>
+
+            {/* Grade Distribution Bar */}
+            <Section>
+              <SectionHead title="Grade Distribution" sub="จำนวน events แต่ละ Grade" />
+              <div className="p-4">
+                {gradeData.every(d => activeGroups.every((_, i) => (d[`G${i}`] || 0) === 0))
+                  ? <EmptyChart />
+                  : (
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart data={gradeData} margin={{ top:5, right:10, left:-20, bottom:0 }} barGap={3}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                        <XAxis dataKey="grade" tick={{ fontSize:11, fill:"#64748b" }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize:10, fill:"#94a3b8" }} axisLine={false} tickLine={false} allowDecimals={false} />
+                        <Tooltip content={<ChartTooltip />} />
+                        {activeGroups.map((ag, i) => (
+                          <Bar key={i} dataKey={`G${i}`} name={ag.meta.label}
+                            fill={ag.meta.barFill} radius={[4, 4, 0, 0]} />
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+              </div>
+            </Section>
+          </div>
+
+          {/* Symptom Detail */}
+          <Section>
+            <SectionHead title="Symptom Detail Comparison" sub="เปรียบเทียบอาการรายชนิด" />
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-[#f8fafc] border-b border-[#e2e8f0] text-[11px] font-bold text-[#64748b] uppercase tracking-wide">
+                    <th className="text-left px-5 py-3 sticky left-0 bg-[#f8fafc] z-10">อาการ</th>
+                    {activeGroups.map((ag, i) =>
+                      ["G1","G2","G3","G4","G5","รวม"].map(g =>
+                        <th key={`${i}-${g}`} className="text-center px-2 py-3"
+                          style={{ background:`${ag.meta.barFill}0a` }}>{g}</th>
+                      )
+                    )}
+                  </tr>
+                  <tr className="text-xs border-b border-[#e2e8f0]">
+                    <th className="px-5 py-1.5 text-left sticky left-0 bg-white" />
+                    {activeGroups.map((ag, i) => (
+                      <th key={i} colSpan={6} className="text-center font-semibold py-1.5"
+                        style={{ color: ag.meta.barFill, background:`${ag.meta.barFill}08` }}>
+                        {ag.meta.label}{ag.regimens.length > 1 ? ` (${ag.regimens.length} สูตร)` : ag.regimens[0] ? `: ${ag.regimens[0]}` : ""}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#f1f5f9]">
+                  {allNames.length === 0 ? (
+                    <tr>
+                      <td colSpan={1 + activeGroups.length * 6}
+                        className="py-10 text-center text-sm text-[#94a3b8]">ไม่พบข้อมูลอาการ</td>
+                    </tr>
+                  ) : allNames.map((name, ri) => {
+                    const bds = activeGroups.map(ag => ag.stats.breakdown[name] || { 1:0, 2:0, 3:0, 4:0, 5:0, total:0 });
+                    const maxTotal = Math.max(...bds.map(b => b.total));
+                    return (
+                      <tr key={name}
+                        className={`hover:bg-[#f8fafc] transition-colors ${ri % 2 === 0 ? "bg-white" : "bg-[#f8fafc]/40"}`}>
+                        <td className="px-5 py-2 font-medium text-[#334155] text-xs sticky left-0 bg-inherit border-r border-[#e2e8f0]">{name}</td>
+                        {bds.map((bd, gi) => (
+                          <>
+                            {[1, 2, 3, 4, 5].map(g => (
+                              <td key={`${gi}-g${g}`} className="text-center px-2 py-2"
+                                style={{ background:`${activeGroups[gi].meta.barFill}08` }}>
+                                {bd[g] > 0
+                                  ? <span className="text-xs font-bold" style={{ color: GRADE_HEX[g] }}>{bd[g]}</span>
+                                  : <span className="text-[#e2e8f0] text-xs">·</span>}
+                              </td>
+                            ))}
+                            <td key={`${gi}-total`} className="text-center px-2 py-2"
+                              style={{ background:`${activeGroups[gi].meta.barFill}12` }}>
+                              <span className="inline-flex items-center justify-center w-8 h-6 rounded-md text-xs font-bold"
+                                style={bd.total > 0 && bd.total === maxTotal
+                                  ? { background: activeGroups[gi].meta.barFill, color:"#fff" }
+                                  : bd.total > 0
+                                    ? { background:`${activeGroups[gi].meta.barFill}22`, color: activeGroups[gi].meta.barFill }
+                                    : { color:"#cbd5e1" }}>
+                                {bd.total || "·"}
+                              </span>
+                            </td>
+                          </>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+   MAIN COMPONENT
+════════════════════════════════════════════════════════════ */
 export default function Report() {
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState(currentYear);
   const [gradeFilter, setGradeFilter]   = useState("all");
-  const [view, setView]                 = useState("symptom"); // "symptom" | "summary"
+  const [view, setView]   = useState("dashboard");
+  const [groups, setGroups] = useState([
+    { label:"A", regimens:[] },
+    { label:"B", regimens:[] },
+    { label:"C", regimens:[] },
+  ]);
 
-  // ── load records ────────────────────────────────────────────────────────────
   const allRecords = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem("patientRecords") || "[]"); }
-    catch { return []; }
+    try { return JSON.parse(localStorage.getItem("patientRecords") || "[]"); } catch { return []; }
   }, []);
 
   const availableYears = useMemo(() => {
     const ys = new Set([currentYear]);
-    allRecords.forEach((r) => {
+    allRecords.forEach(r => {
       if (r.date) { const y = new Date(r.date).getFullYear(); if (y >= 2020 && y <= currentYear + 5) ys.add(y); }
     });
     return Array.from(ys).sort((a, b) => b - a);
   }, [allRecords, currentYear]);
 
   const records = useMemo(
-    () => allRecords.filter((r) => r.date && new Date(r.date).getFullYear() === selectedYear),
+    () => allRecords.filter(r => r.date && new Date(r.date).getFullYear() === selectedYear),
     [allRecords, selectedYear]
   );
 
@@ -59,28 +453,32 @@ export default function Report() {
     [selectedYear]
   );
 
-  // ── symptom matrix ──────────────────────────────────────────────────────────
   const allSymptomNames = useMemo(() => {
-    const extras = new Set();
-    records.forEach((r) => (r.otherSymptoms || []).forEach((s) => { if (s.grade) extras.add(s.name); }));
-    return [...MAIN_SYMPTOMS, ...Array.from(extras)];
+    const names = new Set();
+    records.forEach(r => {
+      Object.entries(r.symptoms || {}).forEach(([k, v]) => {
+        const g = typeof v === "object" ? v?.grade : v;
+        if (!g) return;
+        const label = typeof v === "object" ? (v.label || k) : k;
+        names.add(label);
+      });
+    });
+    return Array.from(names).sort();
   }, [records]);
 
   const matrix = useMemo(() => {
     const res = {};
-    allSymptomNames.forEach((name) => { res[name] = {}; MONTHS.forEach(({ key }) => { res[name][key] = 0; }); });
+    allSymptomNames.forEach(n => { res[n] = {}; MONTHS.forEach(({ key }) => { res[n][key] = 0; }); });
     const gn = gradeFilter === "all" ? null : parseInt(gradeFilter);
-    records.forEach((rec) => {
+    records.forEach(rec => {
       const month = new Date(rec.date).getMonth() + 1;
-      Object.entries(rec.symptoms || {}).forEach(([k, g]) => {
-        if (!g) return; const label = SYMPTOM_KEY_TO_LABEL[k]; if (!label) return;
+      Object.entries(rec.symptoms || {}).forEach(([k, v]) => {
+        const g = typeof v === "object" ? v?.grade : v;
+        if (!g) return;
         if (gn && g !== gn) return;
+        const label = typeof v === "object" ? (v.label || k) : k;
+        if (!res[label]) { res[label] = {}; MONTHS.forEach(({ key }) => { res[label][key] = 0; }); }
         res[label][month] = (res[label][month] || 0) + 1;
-      });
-      (rec.otherSymptoms || []).forEach((s) => {
-        if (!s.grade || !s.name) return; if (gn && s.grade !== gn) return;
-        if (!res[s.name]) { res[s.name] = {}; MONTHS.forEach(({ key }) => { res[s.name][key] = 0; }); }
-        res[s.name][month] = (res[s.name][month] || 0) + 1;
       });
     });
     return res;
@@ -88,7 +486,7 @@ export default function Report() {
 
   const symptomTotals = useMemo(() => {
     const t = {};
-    allSymptomNames.forEach((n) => { t[n] = MONTHS.reduce((s, { key }) => s + (matrix[n]?.[key] || 0), 0); });
+    allSymptomNames.forEach(n => { t[n] = MONTHS.reduce((s, { key }) => s + (matrix[n]?.[key] || 0), 0); });
     return t;
   }, [matrix, allSymptomNames, MONTHS]);
 
@@ -100,345 +498,181 @@ export default function Report() {
 
   const grandTotal = allSymptomNames.reduce((s, n) => s + (symptomTotals[n] || 0), 0);
 
-  // ── monthly summary rows ────────────────────────────────────────────────────
-  const summaryRows = useMemo(() => {
-    return MONTHS.map(({ key, label }) => {
-      const monthRecs = records.filter((r) => new Date(r.date).getMonth() + 1 === key);
-      const visits    = monthRecs.length;                                          // visits = records that month
-      const adrVisits = monthRecs.filter((r) => countADRsInRecord(r) > 0).length; // visits ที่พบ ADR
-      const totalADR  = monthRecs.reduce((s, r) => s + countADRsInRecord(r), 0);  // จำนวน ADR events ทั้งหมด
-      const g3plus    = monthRecs.reduce((s, r) => s + countGrade3PlusInRecord(r), 0); // CTCAE ≥3
-      const interventionCount = monthRecs.filter(hasIntervention).length;           // visits ที่มี intervention
-
-      return {
-        label,
-        visits,
-        adrVisits,
-        totalADR,
-        adrPerVisit:   visits ? (totalADR / visits).toFixed(2) : "-",
-        g3plus,
-        g3Per100:      visits ? ((g3plus / visits) * 100).toFixed(1) : "-",
-        interventionCount,
-      };
-    });
-  }, [records, MONTHS]);
+  const summaryRows = useMemo(() => MONTHS.map(({ key, label }) => {
+    const mr = records.filter(r => new Date(r.date).getMonth() + 1 === key);
+    const visits = mr.length;
+    const adrVisits = mr.filter(r => countADRs(r) > 0).length;
+    const totalADR  = mr.reduce((s, r) => s + countADRs(r), 0);
+    const g3plus    = mr.reduce((s, r) => s + countG3plus(r), 0);
+    return {
+      label, visits, adrVisits, totalADR,
+      adrPerVisit: visits ? (totalADR / visits).toFixed(2) : "-",
+      g3plus,
+      g3Per100: visits ? ((g3plus / visits) * 100).toFixed(1) : "-",
+    };
+  }), [records, MONTHS]);
 
   const summaryFooter = useMemo(() => {
-    const visits             = summaryRows.reduce((s, r) => s + r.visits, 0);
-    const adrVisits          = summaryRows.reduce((s, r) => s + r.adrVisits, 0);
-    const totalADR           = summaryRows.reduce((s, r) => s + r.totalADR, 0);
-    const g3plus             = summaryRows.reduce((s, r) => s + r.g3plus, 0);
-    const interventionCount  = summaryRows.reduce((s, r) => s + r.interventionCount, 0);
+    const visits    = summaryRows.reduce((s, r) => s + r.visits, 0);
+    const adrVisits = summaryRows.reduce((s, r) => s + r.adrVisits, 0);
+    const totalADR  = summaryRows.reduce((s, r) => s + r.totalADR, 0);
+    const g3plus    = summaryRows.reduce((s, r) => s + r.g3plus, 0);
     return {
       visits, adrVisits, totalADR,
       adrPerVisit: visits ? (totalADR / visits).toFixed(2) : "-",
       g3plus,
-      g3Per100:    visits ? ((g3plus / visits) * 100).toFixed(1) : "-",
-      interventionCount,
+      g3Per100: visits ? ((g3plus / visits) * 100).toFixed(1) : "-",
     };
   }, [summaryRows]);
 
-  // ── export ──────────────────────────────────────────────────────────────────
+  const allRegimens = useMemo(() => {
+    const s = new Set();
+    allRecords.forEach(r => { if (r.regimen && r.regimen !== "-") s.add(r.regimen); });
+    return Array.from(s).sort();
+  }, [allRecords]);
+
+  const activeGroups = groups.filter(g => g.regimens.length > 0);
+
   const handleExport = () => {
     let csv = "";
     if (view === "symptom") {
-      const header = ["อาการ", ...MONTHS.map((m) => m.label), "Total"].join(",");
-      const rows   = allSymptomNames.map((n) => [n, ...MONTHS.map(({ key }) => matrix[n]?.[key] || 0), symptomTotals[n]].join(","));
-      const footer = ["รวมทั้งหมด", ...MONTHS.map(({ key }) => monthTotals[key] || 0), grandTotal].join(",");
-      csv = [header, ...rows, footer].join("\n");
-    } else {
-      const header = ["เดือน","Visits","Visits ที่พบ ADR","ADR ทั้งหมด","ADR/Visit","CTCAE≥3","CTCAE≥3 per 100 visit","Intervention"].join(",");
-      const rows   = summaryRows.map((r) => [r.label,r.visits,r.adrVisits,r.totalADR,r.adrPerVisit,r.g3plus,r.g3Per100,r.interventionCount].join(","));
-      const footer = ["รวม",summaryFooter.visits,summaryFooter.adrVisits,summaryFooter.totalADR,summaryFooter.adrPerVisit,summaryFooter.g3plus,summaryFooter.g3Per100,summaryFooter.interventionCount].join(",");
-      csv = [header, ...rows, footer].join("\n");
+      const h = ["อาการ", ...MONTHS.map(m => m.label), "Total"].join(",");
+      const r = allSymptomNames.map(n => [n, ...MONTHS.map(({ key }) => matrix[n]?.[key] || 0), symptomTotals[n]].join(","));
+      const f = ["รวม", ...MONTHS.map(({ key }) => monthTotals[key] || 0), grandTotal].join(",");
+      csv = [h, ...r, f].join("\n");
+    } else if (view === "summary") {
+      const h = ["เดือน","Visits","Visits+ADR","ADR","ADR/Visit","G3+","G3+/100v"].join(",");
+      const r = summaryRows.map(row => [row.label, row.visits, row.adrVisits, row.totalADR, row.adrPerVisit, row.g3plus, row.g3Per100].join(","));
+      const f = ["รวม", summaryFooter.visits, summaryFooter.adrVisits, summaryFooter.totalADR, summaryFooter.adrPerVisit, summaryFooter.g3plus, summaryFooter.g3Per100].join(",");
+      csv = [h, ...r, f].join("\n");
+    } else if (view === "compare" && activeGroups.length >= 2) {
+      const labels     = ["A","B","C"].slice(0, activeGroups.length);
+      const groupStats = activeGroups.map(g => calcStats(allRecords.filter(r => g.regimens.includes(r.regimen))));
+      const allN       = Array.from(new Set(groupStats.flatMap(s => Object.keys(s.breakdown)))).sort();
+      const h = ["อาการ", ...labels.flatMap(l => [`${l}-รวม`, ...[1,2,3,4,5].map(g => `${l}-G${g}`)])].join(",");
+      const r = allN.map(n => [n, ...groupStats.flatMap(s => { const b = s.breakdown[n] || {}; return [b.total || 0, ...[1,2,3,4,5].map(g => b[g] || 0)]; })].join(","));
+      csv = [h, ...r].join("\n");
     }
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    if (!csv) return;
+    const blob = new Blob(["\uFEFF" + csv], { type:"text/csv;charset=utf-8;" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href = url; a.download = `ADR_Report_${selectedYear}_${view}.csv`; a.click();
     URL.revokeObjectURL(url);
   };
 
-  // ── shared header controls ──────────────────────────────────────────────────
-  const Controls = (
-    <div className="flex items-center gap-3 flex-wrap">
-      {/* View toggle */}
-      <div className="flex items-center bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-        {[
-          { id:"symptom", label:"ตารางอาการ" },
-          { id:"summary", label:"สรุปรายเดือน" },
-        ].map(({ id, label }) => (
+  const TABS = [
+    { id:"dashboard", label:"Dashboard" },
+    { id:"symptom",   label:"Symptom Matrix" },
+    { id:"summary",   label:"Monthly Summary" },
+    { id:"compare",   label:"Compare Regimen" },
+  ];
+
+  return (
+    <div className="space-y-5 pb-8" style={{ fontFamily:"'IBM Plex Sans', sans-serif" }}>
+      {/* ── Header row ── */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          {/* Icon badge — navy, matches Dashboard */}
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background:"#0f4c81" }}>
+            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round"
+                d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z"/>
+            </svg>
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-[18px] font-bold text-[#0f172a] tracking-[-0.01em]">ADR Analytics</h1>
+              <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                style={{ background:"#eff6ff", color:"#0f4c81" }}>CLINICAL</span>
+            </div>
+            <p className="text-[11px] text-[#94a3b8] mt-0.5 font-medium">Adverse Drug Reaction · Pharmacovigilance Dashboard</p>
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {view !== "compare" && (
+            <div className="flex items-center gap-1.5 bg-white border border-[#e2e8f0] rounded-lg px-3 py-2 shadow-sm">
+              <svg className="w-3.5 h-3.5 text-[#94a3b8]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round"
+                  d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75"/>
+              </svg>
+              <select value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))}
+                className="text-[13px] font-semibold border-0 bg-transparent text-[#334155] outline-none cursor-pointer">
+                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+          )}
+          {(view !== "compare" || (view === "compare" && activeGroups.length >= 2)) && (
+            <button onClick={handleExport}
+              className="flex items-center gap-1.5 px-3 py-2 bg-white border border-[#e2e8f0]
+                         hover:border-[#bfdbfe] hover:text-[#0f4c81] text-[#64748b] text-xs font-semibold
+                         rounded-lg shadow-sm transition-all">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12M12 16.5V3"/>
+              </svg>
+              Export CSV
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Tab bar — matches Dashboard button style ── */}
+      <div className="flex bg-white border border-[#e2e8f0] rounded-xl p-1 gap-1 shadow-sm w-fit">
+        {TABS.map(({ id, label }) => (
           <button key={id} onClick={() => setView(id)}
-            className={`px-4 py-2 text-xs font-bold transition-all ${view === id ? "bg-blue-700 text-white" : "text-slate-500 hover:bg-slate-100"}`}>
+            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all whitespace-nowrap
+              ${view === id
+                ? "text-white shadow-sm"
+                : "text-[#64748b] hover:bg-[#f8fafc] hover:text-[#334155]"}`}
+            style={view === id ? { background:"#0f4c81" } : {}}>
             {label}
           </button>
         ))}
       </div>
 
-      {/* Year */}
-      <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-sm">
-        <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75" />
-        </svg>
-        <span className="text-xs font-semibold text-slate-500">ปี:</span>
-        <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))}
-          className="text-sm font-semibold border border-slate-200 rounded-lg px-2 py-1 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200">
-          {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
-      </div>
-
-      {/* Grade (symptom view only) */}
-      {view === "symptom" && (
-        <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl px-3 py-1.5 shadow-sm">
-          <span className="text-xs font-semibold text-slate-500 mr-1">Grade:</span>
-          {["all","1","2","3","4","5"].map((g) => (
-            <button key={g} onClick={() => setGradeFilter(g)}
-              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${gradeFilter === g ? "bg-blue-700 text-white shadow-sm" : "text-slate-500 hover:bg-slate-100"}`}>
-              {g === "all" ? "All" : g}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Export */}
-      <button onClick={handleExport}
-        className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 hover:border-blue-400 hover:text-blue-700 text-slate-600 text-sm font-semibold rounded-xl shadow-sm transition-all">
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12M12 16.5V3" />
-        </svg>
-        Export CSV
-      </button>
-    </div>
-  );
-
-  // ── empty state ─────────────────────────────────────────────────────────────
-  const EmptyState = (
-    <div className="flex flex-col items-center justify-center py-20 text-center">
-      <svg className="w-12 h-12 text-slate-200 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625z" />
-      </svg>
-      <p className="text-sm font-semibold text-slate-400">ไม่มีข้อมูลในปี {selectedYear}</p>
-      <p className="text-xs text-slate-300 mt-1">บันทึกผลการประเมินเพื่อดูรายงาน</p>
-    </div>
-  );
-
-  // ── render ──────────────────────────────────────────────────────────────────
-  return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-slate-800">ADR Report</h1>
-          <p className="text-sm text-slate-500 mt-0.5">รายงานอาการไม่พึงประสงค์จากเคมีบำบัด — ปี {selectedYear}</p>
-        </div>
-        {Controls}
-      </div>
-
-      {/* ══ VIEW 1: Symptom matrix ══════════════════════════════════════════════ */}
-      {view === "symptom" && (
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-            <h2 className="text-sm font-bold text-slate-700">
-              จำนวนอาการไม่พึงประสงค์รายเดือน — ปี {selectedYear}
-              {gradeFilter !== "all" && <span className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-lg">Grade {gradeFilter} only</span>}
-            </h2>
-            <div className="flex items-center gap-3 text-xs text-slate-400">
-              <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-50 border border-blue-200 inline-block"/>1–4</span>
-              <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-orange-100 border border-orange-200 inline-block"/>5–9</span>
-              <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-100 border border-red-200 inline-block"/>10+</span>
-            </div>
+      {/* ── Views ── */}
+      {view === "dashboard" && (
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
+            <GradeDist records={records} />
+            <MonthlyCountCharts records={records} MONTHS={MONTHS} />
           </div>
-          {records.length === 0 ? EmptyState : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1000px] text-sm">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100">
-                    <th className="text-left px-5 py-3 text-xs font-bold text-slate-500 uppercase tracking-wide w-40 sticky left-0 bg-slate-50 z-10">อาการ</th>
-                    {MONTHS.map(({ label }) => (
-                      <th key={label} className="text-center px-2 py-3 text-xs font-bold text-slate-500 uppercase tracking-wide w-16">{label}</th>
-                    ))}
-                    <th className="text-center px-4 py-3 text-xs font-bold text-blue-700 uppercase tracking-wide w-16 bg-blue-50">Total</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {allSymptomNames.map((name) => (
-                    <tr key={name} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-5 py-3 font-semibold text-slate-700 sticky left-0 bg-white z-10 border-r border-slate-100">{name}</td>
-                      {MONTHS.map(({ key }) => {
-                        const count = matrix[name]?.[key] || 0;
-                        return (
-                          <td key={key} className="text-center px-2 py-3">
-                            {count > 0
-                              ? <span className={`inline-flex items-center justify-center w-8 h-7 rounded-lg text-xs ${getCellColor(count)}`}>{count}</span>
-                              : <span className="text-slate-200 text-xs">—</span>}
-                          </td>
-                        );
-                      })}
-                      <td className="text-center px-4 py-3 bg-blue-50">
-                        <span className={`inline-flex items-center justify-center w-10 h-7 rounded-lg text-xs font-bold ${symptomTotals[name] > 0 ? "bg-blue-700 text-white" : "text-slate-300"}`}>
-                          {symptomTotals[name] || 0}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2 border-slate-200 bg-slate-50">
-                    <td className="px-5 py-3 text-xs font-bold text-slate-600 uppercase tracking-wide sticky left-0 bg-slate-50 z-10 border-r border-slate-100">รวมทั้งหมด</td>
-                    {MONTHS.map(({ key }) => {
-                      const count = monthTotals[key] || 0;
-                      return (
-                        <td key={key} className="text-center px-2 py-3">
-                          <span className={`inline-flex items-center justify-center w-8 h-7 rounded-lg text-xs font-bold ${count > 0 ? "bg-slate-700 text-white" : "text-slate-300"}`}>
-                            {count || "—"}
-                          </span>
-                        </td>
-                      );
-                    })}
-                    <td className="text-center px-4 py-3 bg-blue-100">
-                      <span className="inline-flex items-center justify-center w-10 h-7 rounded-lg text-xs font-bold bg-blue-700 text-white">{grandTotal}</span>
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          )}
+          <MonthlyRateCharts records={records} MONTHS={MONTHS} />
         </div>
       )}
 
-      {/* ══ VIEW 2: Monthly summary list ════════════════════════════════════════ */}
+      {view === "symptom" && (
+        <SymptomMatrix
+          matrix={matrix} allSymptomNames={allSymptomNames} MONTHS={MONTHS}
+          symptomTotals={symptomTotals} monthTotals={monthTotals} grandTotal={grandTotal}
+          gradeFilter={gradeFilter} setGradeFilter={setGradeFilter}
+        />
+      )}
+
       {view === "summary" && (
-        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-100">
-            <h2 className="text-sm font-bold text-slate-700">สรุปผลรายเดือน — ปี {selectedYear}</h2>
-            <p className="text-xs text-slate-400 mt-0.5">แต่ละแถว = 1 เดือน | CTCAE ≥3 = อาการระดับรุนแรง</p>
-          </div>
-          {records.length === 0 ? EmptyState : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100 text-xs font-bold text-slate-500 uppercase tracking-wide">
-                    <th className="text-left px-5 py-3 sticky left-0 bg-slate-50 z-10 w-24">เดือน</th>
-                    <th className="text-center px-3 py-3">
-                      <div>Visits</div>
-                      <div className="font-normal text-slate-400 normal-case tracking-normal">(ใช้ยา)</div>
-                    </th>
-                    <th className="text-center px-3 py-3 bg-blue-50/60">
-                      <div>Visits</div>
-                      <div className="font-normal text-slate-400 normal-case tracking-normal">ที่พบ ADR</div>
-                    </th>
-                    <th className="text-center px-3 py-3 bg-blue-50/60">
-                      <div>จำนวน ADR</div>
-                      <div className="font-normal text-slate-400 normal-case tracking-normal">(events)</div>
-                    </th>
-                    <th className="text-center px-3 py-3 bg-blue-50/60">
-                      <div>ADR / Visit</div>
-                      <div className="font-normal text-slate-400 normal-case tracking-normal">(times/visit)</div>
-                    </th>
-                    <th className="text-center px-3 py-3 bg-orange-50/60">
-                      <div>CTCAE ≥3</div>
-                      <div className="font-normal text-slate-400 normal-case tracking-normal">(events)</div>
-                    </th>
-                    <th className="text-center px-3 py-3 bg-orange-50/60">
-                      <div>CTCAE ≥3</div>
-                      <div className="font-normal text-slate-400 normal-case tracking-normal">(per 100 visit)</div>
-                    </th>
-                    <th className="text-center px-3 py-3 bg-emerald-50/60">
-                      <div>Intervention</div>
-                      <div className="font-normal text-slate-400 normal-case tracking-normal">(visits)</div>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {summaryRows.map((row) => (
-                    <tr key={row.label} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-5 py-3 font-bold text-slate-700 sticky left-0 bg-white z-10 border-r border-slate-100">{row.label}</td>
-
-                      {/* Visits */}
-                      <td className="text-center px-3 py-3">
-                        {row.visits > 0
-                          ? <span className="inline-flex items-center justify-center w-9 h-7 rounded-lg text-xs font-semibold bg-slate-100 text-slate-700">{row.visits}</span>
-                          : <span className="text-slate-200 text-xs">—</span>}
-                      </td>
-
-                      {/* Visits w/ ADR */}
-                      <td className="text-center px-3 py-3 bg-blue-50/40">
-                        {row.adrVisits > 0
-                          ? <span className="inline-flex items-center justify-center w-9 h-7 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">{row.adrVisits}</span>
-                          : <span className="text-slate-200 text-xs">—</span>}
-                      </td>
-
-                      {/* Total ADR events */}
-                      <td className="text-center px-3 py-3 bg-blue-50/40">
-                        {row.totalADR > 0
-                          ? <span className={`inline-flex items-center justify-center w-9 h-7 rounded-lg text-xs font-semibold ${getCellColor(row.totalADR)}`}>{row.totalADR}</span>
-                          : <span className="text-slate-200 text-xs">—</span>}
-                      </td>
-
-                      {/* ADR per visit */}
-                      <td className="text-center px-3 py-3 bg-blue-50/40">
-                        {row.adrPerVisit !== "-"
-                          ? <span className="inline-flex items-center justify-center px-2 h-7 rounded-lg text-xs font-semibold bg-blue-50 text-blue-700">{row.adrPerVisit}</span>
-                          : <span className="text-slate-200 text-xs">—</span>}
-                      </td>
-
-                      {/* CTCAE ≥3 events */}
-                      <td className="text-center px-3 py-3 bg-orange-50/40">
-                        {row.g3plus > 0
-                          ? <span className="inline-flex items-center justify-center w-9 h-7 rounded-lg text-xs font-semibold bg-orange-100 text-orange-700">{row.g3plus}</span>
-                          : <span className="text-slate-200 text-xs">—</span>}
-                      </td>
-
-                      {/* CTCAE ≥3 per 100 visit */}
-                      <td className="text-center px-3 py-3 bg-orange-50/40">
-                        {row.g3Per100 !== "-" && row.g3plus > 0
-                          ? <span className="inline-flex items-center justify-center px-2 h-7 rounded-lg text-xs font-semibold bg-orange-50 text-orange-700">{row.g3Per100}</span>
-                          : <span className="text-slate-200 text-xs">—</span>}
-                      </td>
-
-                      {/* Intervention count */}
-                      <td className="text-center px-3 py-3 bg-emerald-50/40">
-                        {row.interventionCount > 0
-                          ? <span className="inline-flex items-center justify-center w-9 h-7 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700">{row.interventionCount}</span>
-                          : <span className="text-slate-200 text-xs">—</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-
-                {/* Footer totals */}
-                <tfoot>
-                  <tr className="border-t-2 border-slate-200 bg-slate-50 text-xs font-bold text-slate-600">
-                    <td className="px-5 py-3 sticky left-0 bg-slate-50 z-10 border-r border-slate-100 uppercase tracking-wide">รวมทั้งปี</td>
-
-                    <td className="text-center px-3 py-3">
-                      <span className="inline-flex items-center justify-center w-9 h-7 rounded-lg bg-slate-700 text-white text-xs">{summaryFooter.visits}</span>
-                    </td>
-                    <td className="text-center px-3 py-3 bg-blue-50/60">
-                      <span className="inline-flex items-center justify-center w-9 h-7 rounded-lg bg-blue-700 text-white text-xs">{summaryFooter.adrVisits}</span>
-                    </td>
-                    <td className="text-center px-3 py-3 bg-blue-50/60">
-                      <span className="inline-flex items-center justify-center w-9 h-7 rounded-lg bg-blue-700 text-white text-xs">{summaryFooter.totalADR}</span>
-                    </td>
-                    <td className="text-center px-3 py-3 bg-blue-50/60">
-                      <span className="inline-flex items-center justify-center px-2 h-7 rounded-lg bg-blue-700 text-white text-xs">{summaryFooter.adrPerVisit}</span>
-                    </td>
-                    <td className="text-center px-3 py-3 bg-orange-50/60">
-                      <span className="inline-flex items-center justify-center w-9 h-7 rounded-lg bg-orange-500 text-white text-xs">{summaryFooter.g3plus}</span>
-                    </td>
-                    <td className="text-center px-3 py-3 bg-orange-50/60">
-                      <span className="inline-flex items-center justify-center px-2 h-7 rounded-lg bg-orange-500 text-white text-xs">{summaryFooter.g3Per100}</span>
-                    </td>
-                    <td className="text-center px-3 py-3 bg-emerald-50/60">
-                      <span className="inline-flex items-center justify-center w-9 h-7 rounded-lg bg-emerald-600 text-white text-xs">{summaryFooter.interventionCount}</span>
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          )}
-        </div>
+        records.length === 0
+          ? <Section><div className="py-20 text-center text-sm text-[#94a3b8]">ไม่มีข้อมูลในปี {selectedYear}</div></Section>
+          : <MonthlySummaryTable summaryRows={summaryRows} summaryFooter={summaryFooter} />
       )}
+
+      {view === "compare" && (
+        <CompareView
+          allRegimens={allRegimens}
+          groups={groups}
+          setGroups={setGroups}
+          allRecords={allRecords}
+        />
+      )}
+
+      {/* Footer */}
+      <div className="flex justify-between items-center pt-2 border-t border-[#e2e8f0]">
+        <span className="text-[11px] text-[#cbd5e1]"
+              style={{ fontFamily:"'IBM Plex Mono', monospace" }}>ADR-MON v1.0 · CTCAE v6.0</span>
+        <span className="text-[11px] text-[#cbd5e1]">ข้อมูลนี้ใช้สำหรับการติดตามภายในเท่านั้น</span>
+      </div>
     </div>
   );
 }

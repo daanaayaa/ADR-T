@@ -1,6 +1,13 @@
-function Topbar({ title }) {
+function Topbar({ title, user, onLogout }) {
   const now = new Date();
-  const dateStr = now.toLocaleDateString("th-TH", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const dateStr = now.toLocaleDateString("th-TH", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  const isPharmacist = user?.role === "pharmacist";
 
   return (
     <header className="sticky top-0 z-10 flex items-center justify-between px-7 py-4 bg-white border-b border-slate-200">
@@ -9,27 +16,62 @@ function Topbar({ title }) {
         <p className="text-xs text-slate-400 mt-0.5">{dateStr}</p>
       </div>
 
-      <div className="flex items-center gap-4">
-        {/* Notification bell */}
-        <button className="relative w-9 h-9 flex items-center justify-center rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 transition-colors">
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-          </svg>
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />
-        </button>
+      <div className="flex items-center gap-3">
 
-        {/* User */}
+        
+        {/* User info */}
         <div className="flex items-center gap-3">
           <div className="text-right">
-            <p className="text-sm font-semibold text-slate-800 leading-tight">ภก. สมชาย ใจดี</p>
-            <p className="text-xs text-slate-400 leading-tight">Oncology Pharmacist</p>
+            <p className="text-sm font-semibold text-slate-800 leading-tight">
+              {user?.name || "ผู้ใช้งาน"}
+            </p>
+            <p className="text-xs text-slate-400 leading-tight">
+              {user?.title || ""}
+            </p>
           </div>
-          <div className="w-9 h-9 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0">
-            <svg className="w-5 h-5 text-blue-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+          <div
+            className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
+              isPharmacist ? "bg-blue-100" : "bg-emerald-100"
+            }`}
+          >
+            <svg
+              className={`w-5 h-5 ${isPharmacist ? "text-blue-700" : "text-emerald-700"}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.8}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"
+              />
             </svg>
           </div>
         </div>
+
+        {/* Logout button */}
+        <button
+          onClick={onLogout}
+          title="ออกจากระบบ"
+          className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:text-red-600 hover:bg-red-50 border border-slate-200 hover:border-red-200 transition-all"
+        >
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75"
+            />
+          </svg>
+          <span className="hidden sm:inline">ออกจากระบบ</span>
+        </button>
+
       </div>
     </header>
   );
