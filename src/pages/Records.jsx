@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import ctcae from "../data/ctcae.json";
+import { useEffect, useMemo, useState, useCallback } from "react";
+import { recordApi, ctcaeApi } from "../services/api";
 
 const DRUG_OPTIONS = [
   "Paclitaxel","Carboplatin","Trastuzumab","Pertuzumab",
@@ -77,13 +77,18 @@ function SymptomsCell({ symptoms }) {
 /* ── CTCAE Symptom Editor (sub-component for EditModal) ── */
 function SymptomEditor({ value, onChange }) {
   const [search, setSearch] = useState("");
-  const CTCAE_TERMS = useMemo(() => ctcae.flatMap((c) => c.terms || []), []);
+  const [ctcaeTerms, setCtcaeTerms] = useState([]);
+
+  // โหลด CTCAE terms จาก API แทน static import
+  useEffect(() => {
+    ctcaeApi.getTerms().then(setCtcaeTerms).catch(() => {});
+  }, []);
+
   const filteredTerms = useMemo(() =>
-    CTCAE_TERMS.filter((s) => s.label?.toLowerCase().includes(search.toLowerCase())).slice(0, 40),
-    [search, CTCAE_TERMS]
+    ctcaeTerms.filter((s) => s.label?.toLowerCase().includes(search.toLowerCase())).slice(0, 40),
+    [search, ctcaeTerms]
   );
 
-  // value is the symptoms object { key: { label, description, grade } }
   const selectedKeys = Object.keys(value);
 
   const addSymptom = (symptom) => {
@@ -106,12 +111,11 @@ function SymptomEditor({ value, onChange }) {
     });
   };
 
-  // Build lookup: key → full CTCAE term (for options)
   const termByKey = useMemo(() => {
     const map = {};
-    CTCAE_TERMS.forEach((t) => { map[t.key] = t; });
+    ctcaeTerms.forEach((t) => { map[t.key] = t; });
     return map;
-  }, [CTCAE_TERMS]);
+  }, [ctcaeTerms]);
 
   const inputCls = "w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition";
   const labelCls = "block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5";
@@ -188,9 +192,9 @@ function SymptomEditor({ value, onChange }) {
 }
 
 /* ── Edit Modal (full: step1 + step2 fields) ── */
-function EditModal({ record, onSave, onClose }) {
+function EditModal({ record, onSave, onClose, saving }) {
   const [form, setForm] = useState({
-    date:   record.date   || "",
+    date:   record.record_date || record.date   || "",
     cycle:  record.cycle  || "",
     weight: record.weight || "",
     height: record.height || "",
@@ -198,7 +202,6 @@ function EditModal({ record, onSave, onClose }) {
     note:   record.note   || "",
   });
   const [symptoms, setSymptoms] = useState(() => {
-    // Normalize saved symptoms to { key: { label, description, grade } }
     const raw = record.symptoms || {};
     const normalized = {};
     Object.entries(raw).forEach(([key, val]) => {
@@ -212,7 +215,7 @@ function EditModal({ record, onSave, onClose }) {
   });
   const [drugSearch,   setDrugSearch]   = useState("");
   const [drugFiltered, setDrugFiltered] = useState([]);
-  const [activeTab,    setActiveTab]    = useState("step1"); // "step1" | "step2"
+  const [activeTab,    setActiveTab]    = useState("step1");
 
   const handleDrugSearch = (val) => {
     setDrugSearch(val);
@@ -240,7 +243,7 @@ function EditModal({ record, onSave, onClose }) {
           style={{ background: "linear-gradient(135deg,#0f4c81,#1a6fb5)" }}>
           <div>
             <h3 className="text-base font-bold text-white">แก้ไขข้อมูลการประเมิน</h3>
-            <p className="text-xs text-blue-200 mt-0.5">{record.patientName} · HN {record.hn}</p>
+            <p className="text-xs text-blue-200 mt-0.5">{record.patientName || record.patient_name} · HN {record.hn}</p>
           </div>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/20 hover:bg-white/30 text-white text-lg transition">×</button>
         </div>
@@ -329,17 +332,23 @@ function EditModal({ record, onSave, onClose }) {
 
         {/* Footer */}
         <div className="flex justify-end gap-3 px-7 py-4 border-t border-slate-100 bg-slate-50 flex-shrink-0">
-          <button onClick={onClose}
-            className="px-5 py-2 border border-slate-300 hover:border-slate-400 text-slate-700 font-semibold text-sm rounded-xl transition">
+          <button onClick={onClose} disabled={saving}
+            className="px-5 py-2 border border-slate-300 hover:border-slate-400 text-slate-700 font-semibold text-sm rounded-xl transition disabled:opacity-50">
             ยกเลิก
           </button>
-          <button onClick={() => onSave({ ...form, bsa: calcBSA(), regimen: buildRegimen(form.drugs), symptoms })}
-            className="flex items-center gap-2 px-5 py-2 text-white font-semibold text-sm rounded-xl transition"
+          <button
+            onClick={() => onSave({ ...form, bsa: calcBSA(), regimen: buildRegimen(form.drugs), symptoms })}
+            disabled={saving}
+            className="flex items-center gap-2 px-5 py-2 text-white font-semibold text-sm rounded-xl transition disabled:opacity-60"
             style={{ background: "linear-gradient(135deg,#0f4c81,#1a6fb5)" }}>
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 3.75V16.5L12 14.25 7.5 16.5V3.75m9 0H18A2.25 2.25 0 0120.25 6v12A2.25 2.25 0 0118 20.25H6A2.25 2.25 0 013.75 18V6A2.25 2.25 0 016 3.75h1.5m9 0h-9" />
-            </svg>
-            บันทึกการแก้ไข
+            {saving ? (
+              <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 3.75V16.5L12 14.25 7.5 16.5V3.75m9 0H18A2.25 2.25 0 0120.25 6v12A2.25 2.25 0 0118 20.25H6A2.25 2.25 0 013.75 18V6A2.25 2.25 0 016 3.75h1.5m9 0h-9" />
+              </svg>
+            )}
+            {saving ? "กำลังบันทึก..." : "บันทึกการแก้ไข"}
           </button>
         </div>
       </div>
@@ -348,56 +357,87 @@ function EditModal({ record, onSave, onClose }) {
 }
 
 /* ── Main Records ── */
-function Records({ patientRecords: propRecords, setPatientRecords: setPropRecords, userRole }) {
+function Records({ userRole }) {
   // pharmacist = สิทธิ์แก้ไข/ลบ | nurse = ดูได้อย่างเดียว
   const canEdit = userRole === "pharmacist";
-  // Always maintain internal copy — single source of truth to avoid stale closure bugs
-  const [localRecords, setLocalRecords] = useState(() =>
-    JSON.parse(localStorage.getItem("patientRecords") || "[]").map((r) => ({
-      ...r,
-      regimen: r.regimen || buildRegimen(r.drugs),
-    }))
-  );
+
+  const [records,      setRecords]      = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState(null);
+  const [saving,       setSaving]       = useState(false);
   const [search,       setSearch]       = useState("");
-  const [confirmIndex, setConfirmIndex] = useState(null);
-  const [editIndex,    setEditIndex]    = useState(null);
+  const [confirmId,    setConfirmId]    = useState(null);   // record.id (UUID/int จาก DB)
+  const [editId,       setEditId]       = useState(null);   // record.id
 
-  // Sync inbound prop changes (e.g. Step2 just saved a new record)
-  useEffect(() => {
-    if (propRecords) {
-      const migrated = propRecords.map((r) => ({
+  // ── Fetch records จาก API ──
+  const fetchRecords = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await recordApi.getAll();
+      // normalize: map record_date → date, patient_name → patientName
+      const normalized = (data || []).map((r) => ({
         ...r,
-        regimen: r.regimen || buildRegimen(r.drugs),
+        date:        r.record_date || r.date || "",
+        patientName: r.patient_name || r.patientName || "",
+        regimen:     r.regimen || buildRegimen(r.drugs),
       }));
-      setLocalRecords(migrated);
+      setRecords(normalized);
+    } catch (err) {
+      setError(err.message || "ไม่สามารถโหลดข้อมูลได้");
+    } finally {
+      setLoading(false);
     }
-  }, [propRecords]);
+  }, []);
 
-  // Always read from localRecords; write to local + localStorage + prop
-  const persistRecords = (data) => {
-    setLocalRecords(data);
-    localStorage.setItem("patientRecords", JSON.stringify(data));
-    if (setPropRecords) setPropRecords(data);
+  useEffect(() => { fetchRecords(); }, [fetchRecords]);
+
+  // ── Delete ──
+  const handleDelete = async (id) => {
+    setSaving(true);
+    try {
+      await recordApi.delete(id);
+      setRecords((prev) => prev.filter((r) => r.id !== id));
+      setConfirmId(null);
+    } catch (err) {
+      alert(`ลบไม่สำเร็จ: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleDelete = (realIndex) => {
-    const updated = localRecords.filter((_, i) => i !== realIndex);
-    persistRecords(updated);
-    setConfirmIndex(null);
+  // ── Update ──
+  const handleSaveEdit = async (updatedFields) => {
+    setSaving(true);
+    try {
+      // ส่ง payload ตาม shape ที่ server คาดหวัง
+      await recordApi.update(editId, {
+        cycle:         updatedFields.cycle ? Number(updatedFields.cycle) : undefined,
+        dose:          updatedFields.dose  ? Number(updatedFields.dose)  : undefined,
+        dose_unit:     updatedFields.dose_unit,
+        drugs:         updatedFields.drugs || [],
+        symptoms:      updatedFields.symptoms || {},
+        note:          updatedFields.note || "",
+        recommendation: updatedFields.recommendation || "",
+        follow_up_date: updatedFields.follow_up_date,
+      });
+      // อัปเดต local state โดยไม่ต้อง fetch ใหม่ทั้งหมด
+      setRecords((prev) =>
+        prev.map((r) =>
+          r.id === editId
+            ? { ...r, ...updatedFields, regimen: buildRegimen(updatedFields.drugs) }
+            : r
+        )
+      );
+      setEditId(null);
+    } catch (err) {
+      alert(`บันทึกไม่สำเร็จ: ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleSaveEdit = (updatedFields) => {
-    const updated = localRecords.map((r, i) =>
-      i === editIndex ? { ...r, ...updatedFields } : r
-    );
-    persistRecords(updated);
-    setEditIndex(null);
-  };
-
-  const patientRecords = localRecords;
-
-  const filtered = patientRecords
-    .map((r, i) => ({ ...r, _realIndex: i }))
+  const filtered = records
     .filter((r) => {
       const q = search.toLowerCase();
       return !q ||
@@ -406,17 +446,25 @@ function Records({ patientRecords: propRecords, setPatientRecords: setPropRecord
         (r.date || "").includes(q) ||
         (r.regimen || "").toLowerCase().includes(q);
     })
+    .slice()
     .reverse();
 
-  const confirmRecord = confirmIndex !== null ? patientRecords[confirmIndex] : null;
-  const editRecord    = editIndex    !== null ? patientRecords[editIndex]    : null;
+  const confirmRecord = confirmId !== null ? records.find((r) => r.id === confirmId) : null;
+  const editRecord    = editId    !== null ? records.find((r) => r.id === editId)    : null;
 
   return (
     <div>
-      {editRecord && <EditModal record={editRecord} onSave={handleSaveEdit} onClose={() => setEditIndex(null)} />}
+      {editRecord && (
+        <EditModal
+          record={editRecord}
+          onSave={handleSaveEdit}
+          onClose={() => setEditId(null)}
+          saving={saving}
+        />
+      )}
 
       {/* Confirm Delete Modal */}
-      {confirmIndex !== null && (
+      {confirmId !== null && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-8 text-center">
             <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -430,13 +478,14 @@ function Records({ patientRecords: propRecords, setPatientRecords: setPropRecord
               <br />วันที่ {confirmRecord?.date} จะถูกลบถาวร
             </p>
             <div className="flex gap-3">
-              <button onClick={() => setConfirmIndex(null)}
-                className="flex-1 px-4 py-2.5 border border-slate-300 hover:border-slate-400 text-slate-700 font-semibold text-sm rounded-xl transition">
+              <button onClick={() => setConfirmId(null)} disabled={saving}
+                className="flex-1 px-4 py-2.5 border border-slate-300 hover:border-slate-400 text-slate-700 font-semibold text-sm rounded-xl transition disabled:opacity-50">
                 ยกเลิก
               </button>
-              <button onClick={() => handleDelete(confirmIndex)}
-                className="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white font-semibold text-sm rounded-xl transition">
-                ลบข้อมูล
+              <button onClick={() => handleDelete(confirmId)} disabled={saving}
+                className="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white font-semibold text-sm rounded-xl transition disabled:opacity-60 flex items-center justify-center gap-2">
+                {saving && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+                {saving ? "กำลังลบ..." : "ลบข้อมูล"}
               </button>
             </div>
           </div>
@@ -447,17 +496,38 @@ function Records({ patientRecords: propRecords, setPatientRecords: setPropRecord
       <div className="flex items-center justify-between mb-5">
         <div>
           <h1 className="text-xl font-bold text-slate-800">Patient Records</h1>
-          <p className="text-xs text-slate-400 mt-0.5">{patientRecords.length} รายการทั้งหมด</p>
+          <p className="text-xs text-slate-400 mt-0.5">
+            {loading ? "กำลังโหลด..." : `${records.length} รายการทั้งหมด`}
+          </p>
         </div>
-        <div className="relative">
-          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-          </svg>
-          <input type="text" placeholder="ค้นหา HN / ชื่อ / วันที่ / Regimen..."
-            className="pl-9 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-72 hover:border-slate-300 transition"
-            value={search} onChange={(e) => setSearch(e.target.value)} />
+        <div className="flex items-center gap-3">
+          {/* Refresh button */}
+          <button onClick={fetchRecords} disabled={loading}
+            className="w-9 h-9 flex items-center justify-center rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-500 transition disabled:opacity-40">
+            <svg className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+            </svg>
+          </button>
+          <div className="relative">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+            <input type="text" placeholder="ค้นหา HN / ชื่อ / วันที่ / Regimen..."
+              className="pl-9 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 w-72 hover:border-slate-300 transition"
+              value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
         </div>
       </div>
+
+      {/* Error Banner */}
+      {error && (
+        <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between">
+          <span className="text-sm text-red-600">⚠ {error}</span>
+          <button onClick={fetchRecords} className="text-xs text-red-600 border border-red-300 rounded-lg px-3 py-1 hover:bg-red-100 transition">
+            ลองอีกครั้ง
+          </button>
+        </div>
+      )}
 
       {/* Table */}
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
@@ -474,13 +544,24 @@ function Records({ patientRecords: propRecords, setPatientRecords: setPropRecord
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filtered.length > 0 ? (
+              {loading ? (
+                // Loading rows
+                Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={i} className="animate-pulse">
+                    {Array.from({ length: canEdit ? 9 : 8 }).map((__, j) => (
+                      <td key={j} className="px-4 py-3">
+                        <div className="h-4 bg-slate-100 rounded w-3/4" />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : filtered.length > 0 ? (
                 filtered.map((item) => {
                   const allSymptoms = normalizeSymptoms(item.symptoms);
                   const vnAn = item.vn || item.an || item.encounter?.vn || item.encounter?.an || "-";
 
                   return (
-                    <tr key={item._realIndex} className="hover:bg-slate-50 transition-colors align-top">
+                    <tr key={item.id} className="hover:bg-slate-50 transition-colors align-top">
                       <td className="px-4 py-3 text-sm text-slate-600 whitespace-nowrap">{item.date || "-"}</td>
 
                       <td className="px-4 py-3 whitespace-nowrap">
@@ -512,41 +593,38 @@ function Records({ patientRecords: propRecords, setPatientRecords: setPropRecord
                         ) : <span className="text-slate-300">—</span>}
                       </td>
 
-                      {/* Symptoms — capped with expand */}
                       <td className="px-4 py-3 max-w-[220px]">
                         <SymptomsCell symptoms={allSymptoms} />
                       </td>
 
-                      {/* Note */}
                       <td className="px-4 py-3 text-xs text-slate-500 max-w-[130px] break-words leading-relaxed">
                         {item.note || <span className="text-slate-300">—</span>}
                       </td>
 
-                      {/* Actions — pharmacist only */}
                       {canEdit && (
-                      <td className="px-4 py-3">
-                        <div className="flex gap-1.5 justify-center">
-                          <button onClick={() => setEditIndex(item._realIndex)} title="แก้ไข"
-                            className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-blue-50 hover:text-blue-600 border border-slate-200 text-slate-500 transition-all">
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" />
-                            </svg>
-                          </button>
-                          <button onClick={() => setConfirmIndex(item._realIndex)} title="ลบ"
-                            className="w-8 h-8 flex items-center justify-center rounded-lg bg-red-50 hover:bg-red-100 border border-red-200 text-red-500 transition-all">
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                            </svg>
-                          </button>
-                        </div>
-                      </td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-1.5 justify-center">
+                            <button onClick={() => setEditId(item.id)} title="แก้ไข"
+                              className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-blue-50 hover:text-blue-600 border border-slate-200 text-slate-500 transition-all">
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" />
+                              </svg>
+                            </button>
+                            <button onClick={() => setConfirmId(item.id)} title="ลบ"
+                              className="w-8 h-8 flex items-center justify-center rounded-lg bg-red-50 hover:bg-red-100 border border-red-200 text-red-500 transition-all">
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                              </svg>
+                            </button>
+                          </div>
+                        </td>
                       )}
                     </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan="9" className="px-4 py-16 text-center">
+                  <td colSpan={canEdit ? 9 : 8} className="px-4 py-16 text-center">
                     <div className="flex flex-col items-center gap-2">
                       <svg className="w-12 h-12 text-slate-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
@@ -555,7 +633,7 @@ function Records({ patientRecords: propRecords, setPatientRecords: setPropRecord
                         {search ? "ไม่พบข้อมูลที่ค้นหา" : "ยังไม่มีข้อมูลการประเมิน"}
                       </p>
                       {!search && (
-                        <p className="text-slate-300 text-xs">บันทึกการประเมินจาก Step 2 เพื่อแสดงข้อมูลที่นี่</p>
+                        <p className="text-slate-300 text-xs">บันทึกการประเมินจาก Assessment เพื่อแสดงข้อมูลที่นี่</p>
                       )}
                     </div>
                   </td>

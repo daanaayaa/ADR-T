@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import ctcae from "../data/ctcae.json";
+import { recordApi, buildRecordPayload } from "../services/api";
 
 const GRADE_COLORS = {
   1: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -98,7 +99,6 @@ function CustomSymptomModal({ onAdd, onClose }) {
             <div className="space-y-2">
               {rows.map((row, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  {/* Grade dropdown */}
                   <select
                     value={row.grade}
                     onChange={(e) => updateRow(i, "grade", e.target.value)}
@@ -109,12 +109,10 @@ function CustomSymptomModal({ onAdd, onClose }) {
                       <option key={g} value={g}>Grade {g} — {GRADE_LABEL[g]}</option>
                     ))}
                   </select>
-                  {/* Description input */}
                   <input type="text" value={row.desc}
                     onChange={(e) => updateRow(i, "desc", e.target.value)}
                     placeholder="คำอธิบายอาการ..."
                     className="flex-1 min-w-0 px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition" />
-                  {/* Remove row */}
                   {rows.length > 1 && (
                     <button onClick={() => removeRow(i)}
                       className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-500 text-slate-400 transition text-sm font-bold">
@@ -124,8 +122,6 @@ function CustomSymptomModal({ onAdd, onClose }) {
                 </div>
               ))}
             </div>
-
-
           </div>
 
           {error && (
@@ -150,7 +146,7 @@ function CustomSymptomModal({ onAdd, onClose }) {
 }
 
 /* ─── Preview / Confirm Modal ─── */
-function PreviewModal({ patient, assessmentData, symptoms, note, onConfirm, onClose, saving, saved }) {
+function PreviewModal({ patient, assessmentData, symptoms, note, onConfirm, onClose, saving, saved, saveError }) {
   const regimen = [...(assessmentData?.drugs || [])].sort().join(" + ");
   const symptomEntries = Object.entries(symptoms || {});
 
@@ -225,6 +221,16 @@ function PreviewModal({ patient, assessmentData, symptoms, note, onConfirm, onCl
               <p className="text-sm text-slate-700 leading-relaxed">{note}</p>
             </div>
           )}
+
+          {/* ── API error banner ── */}
+          {saveError && (
+            <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700 font-semibold">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+              </svg>
+              {saveError}
+            </div>
+          )}
         </div>
 
         <div className="px-7 py-5 border-t border-slate-100 bg-slate-50 flex items-center justify-between gap-3">
@@ -251,7 +257,7 @@ function PreviewModal({ patient, assessmentData, symptoms, note, onConfirm, onCl
 
 /* ─── Main Step2 ─── */
 function Step2({
-  prev, patient, assessmentData, setPatientRecords, onNavigate, onSaveSuccess,
+  prev, patient, assessmentData, onNavigate, onSaveSuccess,
   /* lifted state from App */
   selectedSymptoms, setSelectedSymptoms,
   symptoms, setSymptoms,
@@ -262,6 +268,7 @@ function Step2({
   const [customModalOpen, setCustomModalOpen] = useState(false);
   const [saving, setSaving]               = useState(false);
   const [saved, setSaved]                 = useState(false);
+  const [saveError, setSaveError]         = useState("");
 
   const CTCAE_TERMS = useMemo(() => ctcae.flatMap((c) => c.terms || []), []);
 
@@ -277,7 +284,6 @@ function Step2({
 
   const addCustomSymptom = (symptom) => {
     setSelectedSymptoms((p) => [...p, symptom]);
-    // Auto-select the first filled grade so it shows immediately without re-picking
     if (symptom.options?.length > 0) {
       const firstOption = symptom.options[0];
       setSymptoms((p) => ({
@@ -304,36 +310,40 @@ function Step2({
     }));
   };
 
-  const confirmSave = () => {
+  // ── บันทึกผ่าน API แทน localStorage ──
+  const confirmSave = async () => {
     setSaving(true);
-    const regimen = [...(assessmentData?.drugs || [])].sort().join(" + ");
-    const vn = assessmentData?.encounter?.vn || assessmentData?.vn || "";
-    const an = assessmentData?.encounter?.an || assessmentData?.an || "";
-    const newRecord = {
-      date: assessmentData?.date,
-      hn: patient?.hn,
-      patientName: patient?.name,
-      vn, an, regimen,
-      drugs: assessmentData?.drugs || [],
-      cycle: assessmentData?.cycle,
-      weight: assessmentData?.weight,
-      height: assessmentData?.height,
-      bsa: assessmentData?.bsa,
-      symptoms, note,
-    };
-    const existing = JSON.parse(localStorage.getItem("patientRecords") || "[]");
-    localStorage.setItem("patientRecords", JSON.stringify([...existing, newRecord]));
-    if (setPatientRecords) setPatientRecords([...existing, newRecord]);
+    setSaveError("");
+    try {
+      const payload = buildRecordPayload({
+        patient,
+        encounter: assessmentData?.encounter,
+        vital: {
+          date:     assessmentData?.date,
+          cycle:    assessmentData?.cycle,
+          dose:     assessmentData?.dose,
+          doseUnit: assessmentData?.doseUnit,
+          drugs:    assessmentData?.drugs || [],
+        },
+        symptoms,
+        note,
+        recommendation: "",
+        followUpDate: "",
+      });
 
-    setTimeout(() => {
-      setSaving(false);
+      await recordApi.create(payload);
+
       setSaved(true);
       setTimeout(() => {
         setPreviewOpen(false);
         setSaved(false);
-        if (onSaveSuccess) onSaveSuccess(); // reset all lifted state + go back to step 1
+        if (onSaveSuccess) onSaveSuccess();
       }, 1000);
-    }, 900);
+    } catch (err) {
+      setSaveError(err.message || "บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const gradeCount = Object.values(symptoms).reduce((acc, v) => {
@@ -350,9 +360,10 @@ function Step2({
           symptoms={symptoms}
           note={note}
           onConfirm={confirmSave}
-          onClose={() => setPreviewOpen(false)}
+          onClose={() => { setPreviewOpen(false); setSaveError(""); }}
           saving={saving}
           saved={saved}
+          saveError={saveError}
         />
       )}
 
@@ -591,7 +602,7 @@ function Step2({
               ))}
             </div>
           )}
-          <button onClick={() => setPreviewOpen(true)}
+          <button onClick={() => { setSaveError(""); setPreviewOpen(true); }}
             className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold text-white shadow-md hover:shadow-lg active:scale-95 transition-all"
             style={{ background: "linear-gradient(135deg,#0f4c81 0%,#1a6fb5 100%)" }}>
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

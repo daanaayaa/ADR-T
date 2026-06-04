@@ -1,5 +1,5 @@
-import { useState } from "react";
-import patients from "../data/patients";
+import { useEffect, useState } from "react";
+import { patientApi, encounterApi } from "../services/api";
 
 const DRUG_OPTIONS = [
   "Paclitaxel", "Carboplatin", "Trastuzumab", "Pertuzumab",
@@ -9,8 +9,32 @@ const DRUG_OPTIONS = [
 function Step1({ next, patient, setPatient, vital, setVital, encounter, setEncounter }) {
   const [search, setSearch]                 = useState(patient ? `${patient.hn} - ${patient.name}` : "");
   const [filteredPatients, setFilteredPatients] = useState([]);
+  const [searchLoading, setSearchLoading]   = useState(false);
   const [drugSearch, setDrugSearch]         = useState("");
   const [filteredDrugs, setFilteredDrugs]   = useState([]);
+  const [encounterLoading, setEncounterLoading] = useState(false);
+
+  // ── ค้นหาผู้ป่วยจาก API แบบ debounce ──
+  useEffect(() => {
+    const val = search.trim();
+    // ถ้ากำลัง display ผู้ป่วยที่เลือกแล้ว ไม่ต้อง search ซ้ำ
+    if (patient && search === `${patient.hn} - ${patient.name}`) return;
+    if (!val) { setFilteredPatients([]); return; }
+
+    const timer = setTimeout(async () => {
+      setSearchLoading(true);
+      try {
+        const results = await patientApi.getAll({ q: val });
+        setFilteredPatients(results || []);
+      } catch {
+        setFilteredPatients([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const calculateBSA = (w, h) => {
     const weight = parseFloat(w);
@@ -21,14 +45,27 @@ function Step1({ next, patient, setPatient, vital, setVital, encounter, setEncou
   const handleSearchChange = (e) => {
     const val = e.target.value;
     setSearch(val);
-    if (!val.trim()) { setFilteredPatients([]); setPatient(null); return; }
-    setFilteredPatients(patients.filter((p) => p.hn.includes(val) || p.name.toLowerCase().includes(val.toLowerCase())));
+    if (!val.trim()) { setFilteredPatients([]); setPatient(null); }
   };
 
-  const handleSearch = () => {
-    const found = patients.find((p) => p.hn.includes(search) || p.name.includes(search));
-    if (found) selectPatient(found);
-    else alert("ไม่พบข้อมูลผู้ป่วย");
+  // ค้นหาแบบ manual (กด button)
+  const handleSearch = async () => {
+    if (!search.trim()) return;
+    setSearchLoading(true);
+    try {
+      const results = await patientApi.getAll({ q: search.trim() });
+      if (results?.length === 1) {
+        selectPatient(results[0]);
+      } else if (results?.length > 1) {
+        setFilteredPatients(results);
+      } else {
+        alert("ไม่พบข้อมูลผู้ป่วย");
+      }
+    } catch (err) {
+      alert(err.message || "เกิดข้อผิดพลาดในการค้นหา");
+    } finally {
+      setSearchLoading(false);
+    }
   };
 
   const selectPatient = (p) => {
@@ -57,8 +94,28 @@ function Step1({ next, patient, setPatient, vital, setVital, encounter, setEncou
 
   const removeDrug = (drug) => setVital((prev) => ({ ...prev, drugs: prev.drugs.filter((d) => d !== drug) }));
 
+  // ── สร้าง Encounter ผ่าน API ──
+  const handleSelectEncounterType = async (type) => {
+    if (!patient) return;
+    setEncounterLoading(true);
+    try {
+      const data = await encounterApi.create({
+        hn: patient.hn,
+        type,
+        visit_date: vital.date || new Date().toISOString().slice(0, 10),
+      });
+      // server ส่งกลับ { id, hn, type, vn?, an?, visit_date }
+      setEncounter(data);
+    } catch (err) {
+      alert(err.message || "ไม่สามารถสร้าง Encounter ได้");
+    } finally {
+      setEncounterLoading(false);
+    }
+  };
+
   const handleNext = () => {
     if (!patient) { alert("กรุณาเลือกผู้ป่วย"); return; }
+    if (!encounter) { alert("กรุณาเลือกประเภท OPD/IPD"); return; }
     if (!vital.drugs.length) { alert("กรุณาเลือกยา"); return; }
     next();
   };
@@ -95,9 +152,9 @@ function Step1({ next, patient, setPatient, vital, setVital, encounter, setEncou
               <input type="text" placeholder="ค้นหา HN หรือชื่อผู้ป่วย"
                 value={search} onChange={handleSearchChange}
                 className={inputCls} />
-              <button onClick={handleSearch}
-                className="px-4 py-2.5 bg-slate-700 hover:bg-slate-800 text-white text-sm font-semibold rounded-lg whitespace-nowrap transition-colors">
-                ค้นหา
+              <button onClick={handleSearch} disabled={searchLoading}
+                className="px-4 py-2.5 bg-slate-700 hover:bg-slate-800 text-white text-sm font-semibold rounded-lg whitespace-nowrap transition-colors disabled:opacity-60">
+                {searchLoading ? "..." : "ค้นหา"}
               </button>
             </div>
             {filteredPatients.length > 0 && (
@@ -138,12 +195,11 @@ function Step1({ next, patient, setPatient, vital, setVital, encounter, setEncou
                   <p className="text-xs font-bold text-slate-600 uppercase tracking-wide mb-3">เลือกประเภทการรักษา</p>
                   <div className="flex gap-3">
                     {["OPD", "IPD"].map((type) => (
-                      <button key={type} onClick={() => setEncounter({
-                        type, ...(type === "OPD" ? { vn: `VN-${Date.now()}` } : { an: `AN-${Date.now()}` }),
-                        hn: patient.hn, date: new Date().toISOString().slice(0, 10),
-                      })}
-                        className="flex-1 py-2 border-2 border-slate-300 hover:border-slate-500 hover:bg-slate-700 hover:text-white text-slate-600 font-bold text-sm rounded-lg transition-all">
-                        {type}
+                      <button key={type}
+                        onClick={() => handleSelectEncounterType(type)}
+                        disabled={encounterLoading}
+                        className="flex-1 py-2 border-2 border-slate-300 hover:border-slate-500 hover:bg-slate-700 hover:text-white text-slate-600 font-bold text-sm rounded-lg transition-all disabled:opacity-60">
+                        {encounterLoading ? "..." : type}
                       </button>
                     ))}
                   </div>

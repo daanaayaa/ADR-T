@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect } from "react";
 import {
   BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
@@ -9,151 +9,32 @@ import {
   Section, SectionHead, MultiRegimenSelect, GradePill, ProgressBar,
   ChartTooltip, EmptyChart,
   MonthlyRateCharts, MonthlyCountCharts,
-  SymptomMatrix, MonthlySummaryTable,
+  GradeDist, SymptomMatrix, MonthlySummaryTable,
 } from "./ReportTokens";
-
-/* ─── Palette aligned with Dashboard ───────────────────────
-   Primary navy  : #0f4c81
-   Mid blue      : #2d7dd2
-   Slate bg      : #f8fafc
-   Card border   : #e2e8f0
-   Text head     : #0f172a
-   Text body     : #334155
-   Text muted    : #64748b
-   Text faint    : #94a3b8
-──────────────────────────────────────────────────────────── */
+import { recordApi } from "../services/api";
 
 /* ════════════════════════════════════════════════════════════
-   DONUT CHART  (SVG, no lib dependency)
+   LOADING SKELETON
 ════════════════════════════════════════════════════════════ */
-function DonutChart({ data, size = 200 }) {
-  const total = data.reduce((s, d) => s + d.value, 0);
-  if (total === 0) return <EmptyChart />;
-
-  const R = size / 2;
-  const cx = R, cy = R;
-  const outerR = R - 10;
-  const innerR = outerR * 0.58;
-
-  let startAngle = -Math.PI / 2;
-  const slices = data.map(d => {
-    const angle = (d.value / total) * 2 * Math.PI;
-    const slice = { ...d, startAngle, endAngle: startAngle + angle };
-    startAngle += angle;
-    return slice;
-  });
-
-  const arc = (sa, ea, r1, r2) => {
-    const x1 = cx + r2 * Math.cos(sa), y1 = cy + r2 * Math.sin(sa);
-    const x2 = cx + r1 * Math.cos(sa), y2 = cy + r1 * Math.sin(sa);
-    const x3 = cx + r1 * Math.cos(ea), y3 = cy + r1 * Math.sin(ea);
-    const x4 = cx + r2 * Math.cos(ea), y4 = cy + r2 * Math.sin(ea);
-    const lg = ea - sa > Math.PI ? 1 : 0;
-    return `M${x1},${y1} L${x2},${y2} A${r1},${r1} 0 ${lg} 1 ${x3},${y3} L${x4},${y4} A${r2},${r2} 0 ${lg} 0 ${x1},${y1} Z`;
-  };
-
-  const [hovered, setHovered] = useState(null);
-
+function Skeleton({ h = 20, w = "100%", radius = 6 }) {
   return (
-    <div className="flex items-center gap-5 flex-wrap">
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="flex-shrink-0">
-        {slices.map((s, i) => (
-          <path key={i}
-            d={arc(s.startAngle, s.endAngle, innerR, outerR)}
-            fill={s.color}
-            opacity={hovered === null || hovered === i ? 1 : 0.3}
-            stroke="white" strokeWidth={2}
-            onMouseEnter={() => setHovered(i)}
-            onMouseLeave={() => setHovered(null)}
-            style={{ transition:"opacity 0.15s", cursor:"default" }}
-          />
-        ))}
-        <circle cx={cx} cy={cy} r={innerR - 2} fill="white" />
-        <text x={cx} y={cy - 8} textAnchor="middle"
-          fontSize={hovered !== null ? 22 : 26} fontWeight="700"
-          fill="#0f172a" fontFamily="'IBM Plex Mono', monospace">
-          {hovered !== null ? slices[hovered].value : total}
-        </text>
-        <text x={cx} y={cy + 11} textAnchor="middle" fontSize={10}
-          fill="#94a3b8" fontFamily="sans-serif">
-          {hovered !== null ? slices[hovered].label : "events"}
-        </text>
-        {hovered !== null && (
-          <text x={cx} y={cy + 26} textAnchor="middle" fontSize={11}
-            fill={slices[hovered].color} fontWeight="700" fontFamily="sans-serif">
-            {Math.round((slices[hovered].value / total) * 100)}%
-          </text>
-        )}
-      </svg>
-      <div className="flex flex-col gap-2.5 min-w-0">
-        {slices.map((s, i) => (
-          <div key={i} className="flex items-center gap-2 text-xs"
-            onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}
-            style={{ opacity: hovered === null || hovered === i ? 1 : 0.3, transition:"opacity 0.15s", cursor:"default" }}>
-            <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: s.color }} />
-            <span className="text-[#475569] font-medium truncate">{s.label}</span>
-            <span className="ml-auto font-bold text-[#0f172a] pl-2"
-                  style={{ fontFamily:"'IBM Plex Mono', monospace" }}>{s.value}</span>
-            <span className="text-[#94a3b8] w-8 text-right">{Math.round((s.value / total) * 100)}%</span>
-          </div>
-        ))}
-      </div>
-    </div>
+    <div style={{
+      height: h, width: w, borderRadius: radius,
+      background: "linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%)",
+      backgroundSize: "200% 100%",
+      animation: "shimmer 1.4s infinite",
+    }} />
   );
 }
 
 /* ════════════════════════════════════════════════════════════
-   MONTHLY RATE BAR CHARTS  →  moved to ReportTokens.jsx
+   COMPARE VIEW  (ไม่เปลี่ยน logic — รับ allRecords จาก parent)
 ════════════════════════════════════════════════════════════ */
-
-/* ════════════════════════════════════════════════════════════
-   MONTHLY COUNT CHARTS  →  moved to ReportTokens.jsx
-════════════════════════════════════════════════════════════ */
-
-/* ── Grade Distribution (Donut) ──────────────────────────── */
-function GradeDist({ records }) {
-  const dist = useMemo(() => {
-    const d = { 1:0, 2:0, 3:0, 4:0, 5:0 };
-    records.forEach(rec => {
-      Object.values(rec.symptoms || {}).forEach(v => {
-        const g = typeof v === "object" ? v?.grade : v;
-        if (g && d[g] !== undefined) d[g]++;
-      });
-    });
-    return d;
-  }, [records]);
-
-  const GRADE_LABELS = {
-    1:"Grade 1 — Mild",
-    2:"Grade 2 — Moderate",
-    3:"Grade 3 — Severe",
-    4:"Grade 4 — Life-threatening",
-    5:"Grade 5 — Fatal",
-  };
-
-  const data = [1, 2, 3, 4, 5]
-    .filter(g => dist[g] > 0)
-    .map(g => ({ label: GRADE_LABELS[g], value: dist[g], color: GRADE_HEX[g] }));
-
-  return (
-    <Section>
-      <SectionHead title="Grade Distribution" sub="สัดส่วน CTCAE Grade" />
-      <div className="p-5">
-        <DonutChart data={data} size={180} />
-      </div>
-    </Section>
-  );
-}
-
-/* ── Symptom Matrix + Monthly Summary Table  →  moved to ReportTokens.jsx ── */
-
-/* ── Compare View ────────────────────────────────────────── */
 function CompareView({ allRegimens, groups, setGroups, allRecords }) {
-  /* Muted group palette — matches overall restrained tone */
   const GROUP_META = [
-    { key:0, label:"กลุ่ม A", accentColor:"blue",   border:"border-[#bfdbfe]",   head:"text-[#0f4c81]",   dot:"bg-[#0f4c81]",   barFill:"#0f4c81" },
-    { key:1, label:"กลุ่ม B", accentColor:"violet", border:"border-[#c7c7e8]",   head:"text-[#5b5ea6]",   dot:"bg-[#5b5ea6]",   barFill:"#5b5ea6" },
-    { key:2, label:"กลุ่ม C", accentColor:"teal",   border:"border-[#a5f3fc]",   head:"text-[#0e7490]",   dot:"bg-[#0e7490]",   barFill:"#0e7490" },
+    { key:0, label:"กลุ่ม A", accentColor:"blue",   border:"border-[#bfdbfe]", head:"text-[#0f4c81]", dot:"bg-[#0f4c81]", barFill:"#0f4c81" },
+    { key:1, label:"กลุ่ม B", accentColor:"violet", border:"border-[#c7c7e8]", head:"text-[#5b5ea6]", dot:"bg-[#5b5ea6]", barFill:"#5b5ea6" },
+    { key:2, label:"กลุ่ม C", accentColor:"teal",   border:"border-[#a5f3fc]", head:"text-[#0e7490]", dot:"bg-[#0e7490]", barFill:"#0e7490" },
   ];
 
   const setGroupRegimens = (idx, regimens) =>
@@ -168,6 +49,7 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
   const activeGroups = groups
     .map((g, i) => ({ ...g, ...groupData[i], meta: GROUP_META[i] }))
     .filter(g => g.regimens.length > 0);
+
   const ready = activeGroups.length >= 2;
 
   const allNames = useMemo(() => {
@@ -214,7 +96,6 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
 
   return (
     <div className="space-y-5">
-      {/* Group selector cards */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {GROUP_META.map((meta, idx) => {
           const g = groups[idx];
@@ -224,8 +105,7 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
                 <p className={`text-[11px] font-bold ${meta.head} uppercase tracking-widest`}>{meta.label}</p>
                 {g.regimens.length > 0 && (
                   <button onClick={() => setGroupRegimens(idx, [])}
-                    className="text-[11px] text-[#94a3b8] hover:text-[#be123c] font-semibold transition-colors
-                               px-1.5 py-0.5 rounded hover:bg-[#fff1f2]">
+                    className="text-[11px] text-[#94a3b8] hover:text-[#be123c] font-semibold transition-colors px-1.5 py-0.5 rounded hover:bg-[#fff1f2]">
                     ล้าง
                   </button>
                 )}
@@ -261,7 +141,6 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
 
       {ready && (
         <>
-          {/* Legend */}
           <div className="flex items-center gap-5 px-1 flex-wrap">
             {activeGroups.map((ag, i) => (
               <span key={i} className="flex items-center gap-2 text-xs font-semibold" style={{ color: ag.meta.barFill }}>
@@ -281,7 +160,6 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
           </div>
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-            {/* Key Metrics */}
             <Section>
               <SectionHead title="Key Metrics" sub="เปรียบเทียบตัวชี้วัดหลัก" />
               <div className="overflow-x-auto">
@@ -319,7 +197,6 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
               </div>
             </Section>
 
-            {/* Grade Distribution Bar */}
             <Section>
               <SectionHead title="Grade Distribution" sub="จำนวน events แต่ละ Grade" />
               <div className="p-4">
@@ -331,10 +208,9 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                         <XAxis dataKey="grade" tick={{ fontSize:11, fill:"#64748b" }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fontSize:10, fill:"#94a3b8" }} axisLine={false} tickLine={false} allowDecimals={false} />
-                        <Tooltip content={<ChartTooltip />} />
+                        <Tooltip content={<ChartTooltip />} cursor={{ fill:"#f8fafc" }} />
                         {activeGroups.map((ag, i) => (
-                          <Bar key={i} dataKey={`G${i}`} name={ag.meta.label}
-                            fill={ag.meta.barFill} radius={[4, 4, 0, 0]} />
+                          <Bar key={i} dataKey={`G${i}`} name={ag.meta.label} fill={ag.meta.barFill} radius={[3,3,0,0]} maxBarSize={22} />
                         ))}
                       </BarChart>
                     </ResponsiveContainer>
@@ -343,7 +219,6 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
             </Section>
           </div>
 
-          {/* Symptom Detail */}
           <Section>
             <SectionHead title="Symptom Detail Comparison" sub="เปรียบเทียบอาการรายชนิด" />
             <div className="overflow-x-auto">
@@ -375,15 +250,15 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
                         className="py-10 text-center text-sm text-[#94a3b8]">ไม่พบข้อมูลอาการ</td>
                     </tr>
                   ) : allNames.map((name, ri) => {
-                    const bds = activeGroups.map(ag => ag.stats.breakdown[name] || { 1:0, 2:0, 3:0, 4:0, 5:0, total:0 });
+                    const bds = activeGroups.map(ag => ag.stats.breakdown[name] || { 1:0,2:0,3:0,4:0,5:0,total:0 });
                     const maxTotal = Math.max(...bds.map(b => b.total));
                     return (
                       <tr key={name}
                         className={`hover:bg-[#f8fafc] transition-colors ${ri % 2 === 0 ? "bg-white" : "bg-[#f8fafc]/40"}`}>
                         <td className="px-5 py-2 font-medium text-[#334155] text-xs sticky left-0 bg-inherit border-r border-[#e2e8f0]">{name}</td>
                         {bds.map((bd, gi) => (
-                          <>
-                            {[1, 2, 3, 4, 5].map(g => (
+                          <span key={gi} style={{ display:"contents" }}>
+                            {[1,2,3,4,5].map(g => (
                               <td key={`${gi}-g${g}`} className="text-center px-2 py-2"
                                 style={{ background:`${activeGroups[gi].meta.barFill}08` }}>
                                 {bd[g] > 0
@@ -402,7 +277,7 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
                                 {bd.total || "·"}
                               </span>
                             </td>
-                          </>
+                          </span>
                         ))}
                       </tr>
                     );
@@ -418,31 +293,65 @@ function CompareView({ allRegimens, groups, setGroups, allRecords }) {
 }
 
 /* ════════════════════════════════════════════════════════════
-   MAIN COMPONENT
+   MAIN COMPONENT — ดึงข้อมูลจาก PostgreSQL API
 ════════════════════════════════════════════════════════════ */
 export default function Report() {
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState(currentYear);
-  const [gradeFilter, setGradeFilter]   = useState("all");
-  const [view, setView]   = useState("dashboard");
-  const [groups, setGroups] = useState([
+  const [gradeFilter,  setGradeFilter]  = useState("all");
+  const [view,         setView]         = useState("dashboard");
+  const [groups,       setGroups]       = useState([
     { label:"A", regimens:[] },
     { label:"B", regimens:[] },
     { label:"C", regimens:[] },
   ]);
 
-  const allRecords = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem("patientRecords") || "[]"); } catch { return []; }
-  }, []);
+  // ── API state ──
+  const [allRecords, setAllRecords] = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState("");
 
+  // ── Fetch ALL records for the selected year ──
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+
+    recordApi.getAll({ year: selectedYear })
+      .then(data => {
+        if (cancelled) return;
+        // normalise: API returns snake_case — map record_date → date, patient_name → patientName
+        const normalised = data.map(r => ({
+          ...r,
+          date:        r.record_date   || r.date        || "",
+          patientName: r.patient_name  || r.patientName || "",
+          regimen:     r.regimen       || (r.drugs ? [...r.drugs].sort().join(" + ") : "-"),
+          // symptoms ส่งมาจาก API เป็น object { key: { label, grade, description } }
+          symptoms:    r.symptoms      || {},
+        }));
+        setAllRecords(normalised);
+        setLoading(false);
+      })
+      .catch(err => {
+        if (!cancelled) { setError(err.message); setLoading(false); }
+      });
+
+    return () => { cancelled = true; };
+  }, [selectedYear]);
+
+  // ── Derive years from data (fallback: current year only) ──
   const availableYears = useMemo(() => {
     const ys = new Set([currentYear]);
     allRecords.forEach(r => {
-      if (r.date) { const y = new Date(r.date).getFullYear(); if (y >= 2020 && y <= currentYear + 5) ys.add(y); }
+      if (r.date) {
+        const y = new Date(r.date).getFullYear();
+        if (y >= 2020 && y <= currentYear + 5) ys.add(y);
+      }
     });
     return Array.from(ys).sort((a, b) => b - a);
   }, [allRecords, currentYear]);
 
+  // ── Filter by year (API already filters, but guard here too) ──
   const records = useMemo(
     () => allRecords.filter(r => r.date && new Date(r.date).getFullYear() === selectedYear),
     [allRecords, selectedYear]
@@ -453,6 +362,7 @@ export default function Report() {
     [selectedYear]
   );
 
+  // ── Symptom matrix ──
   const allSymptomNames = useMemo(() => {
     const names = new Set();
     records.forEach(r => {
@@ -500,7 +410,7 @@ export default function Report() {
 
   const summaryRows = useMemo(() => MONTHS.map(({ key, label }) => {
     const mr = records.filter(r => new Date(r.date).getMonth() + 1 === key);
-    const visits = mr.length;
+    const visits    = mr.length;
     const adrVisits = mr.filter(r => countADRs(r) > 0).length;
     const totalADR  = mr.reduce((s, r) => s + countADRs(r), 0);
     const g3plus    = mr.reduce((s, r) => s + countG3plus(r), 0);
@@ -533,6 +443,7 @@ export default function Report() {
 
   const activeGroups = groups.filter(g => g.regimens.length > 0);
 
+  // ── CSV Export ──
   const handleExport = () => {
     let csv = "";
     if (view === "symptom") {
@@ -570,10 +481,11 @@ export default function Report() {
 
   return (
     <div className="space-y-5 pb-8" style={{ fontFamily:"'IBM Plex Sans', sans-serif" }}>
+      <style>{`@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }`}</style>
+
       {/* ── Header row ── */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          {/* Icon badge — navy, matches Dashboard */}
           <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
             style={{ background:"#0f4c81" }}>
             <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -587,7 +499,11 @@ export default function Report() {
               <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold"
                 style={{ background:"#eff6ff", color:"#0f4c81" }}>CLINICAL</span>
             </div>
-            <p className="text-[11px] text-[#94a3b8] mt-0.5 font-medium">Adverse Drug Reaction · Pharmacovigilance Dashboard</p>
+            <p className="text-[11px] text-[#94a3b8] mt-0.5 font-medium">
+              Adverse Drug Reaction · Pharmacovigilance Dashboard
+              {loading && <span className="ml-2 text-[#b0bec5]">· กำลังโหลดข้อมูล...</span>}
+              {!loading && !error && <span className="ml-2 text-[#b0bec5]">· {allRecords.length} records</span>}
+            </p>
           </div>
         </div>
 
@@ -606,10 +522,10 @@ export default function Report() {
             </div>
           )}
           {(view !== "compare" || (view === "compare" && activeGroups.length >= 2)) && (
-            <button onClick={handleExport}
+            <button onClick={handleExport} disabled={loading || records.length === 0}
               className="flex items-center gap-1.5 px-3 py-2 bg-white border border-[#e2e8f0]
                          hover:border-[#bfdbfe] hover:text-[#0f4c81] text-[#64748b] text-xs font-semibold
-                         rounded-lg shadow-sm transition-all">
+                         rounded-lg shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed">
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12M12 16.5V3"/>
               </svg>
@@ -619,22 +535,55 @@ export default function Report() {
         </div>
       </div>
 
-      {/* ── Tab bar — matches Dashboard button style ── */}
+      {/* ── Error Banner ── */}
+      {error && (
+        <div className="flex items-center gap-3 px-4 py-3 bg-[#fff1f2] border border-[#fecdd3] rounded-xl text-sm text-[#9f1239] font-medium">
+          <span>⚠️</span>
+          <span>ไม่สามารถโหลดข้อมูลได้: {error}</span>
+          <button
+            onClick={() => { setError(""); setLoading(true); recordApi.getAll({ year: selectedYear }).then(d => { setAllRecords(d); setLoading(false); }).catch(e => { setError(e.message); setLoading(false); }); }}
+            className="ml-auto text-[11px] border border-[#fca5a5] rounded-lg px-3 py-1 hover:bg-[#fecdd3] transition">
+            ลองใหม่
+          </button>
+        </div>
+      )}
+
+      {/* ── Tab bar ── */}
       <div className="flex bg-white border border-[#e2e8f0] rounded-xl p-1 gap-1 shadow-sm w-fit">
         {TABS.map(({ id, label }) => (
           <button key={id} onClick={() => setView(id)}
             className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all whitespace-nowrap
-              ${view === id
-                ? "text-white shadow-sm"
-                : "text-[#64748b] hover:bg-[#f8fafc] hover:text-[#334155]"}`}
+              ${view === id ? "text-white shadow-sm" : "text-[#64748b] hover:bg-[#f8fafc] hover:text-[#334155]"}`}
             style={view === id ? { background:"#0f4c81" } : {}}>
             {label}
           </button>
         ))}
       </div>
 
+      {/* ── Loading skeleton ── */}
+      {loading && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
+            <div className="bg-white rounded-xl border border-[#e2e8f0] p-5 space-y-3">
+              <Skeleton h={14} w="60%" /><Skeleton h={120} radius={10} />
+            </div>
+            <div className="bg-white rounded-xl border border-[#e2e8f0] p-5 lg:col-span-3 space-y-3">
+              <Skeleton h={14} w="40%" /><Skeleton h={150} radius={10} />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="bg-white rounded-xl border border-[#e2e8f0] p-5 space-y-3">
+              <Skeleton h={14} w="50%" /><Skeleton h={200} radius={10} />
+            </div>
+            <div className="bg-white rounded-xl border border-[#e2e8f0] p-5 space-y-3">
+              <Skeleton h={14} w="50%" /><Skeleton h={200} radius={10} />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Views ── */}
-      {view === "dashboard" && (
+      {!loading && view === "dashboard" && (
         <div className="space-y-5">
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
             <GradeDist records={records} />
@@ -644,7 +593,7 @@ export default function Report() {
         </div>
       )}
 
-      {view === "symptom" && (
+      {!loading && view === "symptom" && (
         <SymptomMatrix
           matrix={matrix} allSymptomNames={allSymptomNames} MONTHS={MONTHS}
           symptomTotals={symptomTotals} monthTotals={monthTotals} grandTotal={grandTotal}
@@ -652,13 +601,13 @@ export default function Report() {
         />
       )}
 
-      {view === "summary" && (
+      {!loading && view === "summary" && (
         records.length === 0
           ? <Section><div className="py-20 text-center text-sm text-[#94a3b8]">ไม่มีข้อมูลในปี {selectedYear}</div></Section>
           : <MonthlySummaryTable summaryRows={summaryRows} summaryFooter={summaryFooter} />
       )}
 
-      {view === "compare" && (
+      {!loading && view === "compare" && (
         <CompareView
           allRegimens={allRegimens}
           groups={groups}
@@ -670,7 +619,7 @@ export default function Report() {
       {/* Footer */}
       <div className="flex justify-between items-center pt-2 border-t border-[#e2e8f0]">
         <span className="text-[11px] text-[#cbd5e1]"
-              style={{ fontFamily:"'IBM Plex Mono', monospace" }}>ADR-MON v1.0 · CTCAE v6.0</span>
+              style={{ fontFamily:"'IBM Plex Mono', monospace" }}>ADR-MON v2.0 · CTCAE v6.0 · PostgreSQL</span>
         <span className="text-[11px] text-[#cbd5e1]">ข้อมูลนี้ใช้สำหรับการติดตามภายในเท่านั้น</span>
       </div>
     </div>

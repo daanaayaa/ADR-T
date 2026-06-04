@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { statsApi } from "../services/api";
 
 const THIS_MONTH = new Date().toISOString().slice(0, 7);
 
@@ -10,23 +11,7 @@ function monthShort(ym) {
   const [y, m] = ym.split("-");
   return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString("th-TH", { month: "short" });
 }
-function hasADR(r) {
-  return Object.values(r.symptoms || {}).some((v) => {
-    if (v === null || v === undefined) return false;
-    if (typeof v === "object") return v.grade != null;
-    return true;
-  });
-}
-function countGrade3Plus(r) {
-  return Object.values(r.symptoms || {}).filter((v) => {
-    const g = typeof v === "object" ? v?.grade : v;
-    return g >= 3;
-  }).length;
-}
-function totalGrade3Events(records) {
-  return records.reduce((sum, r) => sum + countGrade3Plus(r), 0);
-}
-function fmt2(n) { return isNaN(n) || !isFinite(n) ? "0.00" : n.toFixed(2); }
+function fmt2(n) { return isNaN(n) || !isFinite(n) ? "0.00" : Number(n).toFixed(2); }
 
 const GRADE_META = {
   1: { color: "#a5e1bb", bg: "#f0fdf4" },
@@ -205,85 +190,94 @@ function MetricCard({ label, value, unit, desc, accentColor, icon, sparkData, tr
   );
 }
 
+/* ── Loading Skeleton ── */
+function LoadingSkeleton() {
+  const shimmer = { background: "linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%)", backgroundSize: "200% 100%", animation: "shimmer 1.5s infinite", borderRadius: 8 };
+  return (
+    <>
+      <style>{`@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }`}</style>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(5, 1fr)", gap:12, marginBottom:20 }}>
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:10, padding:18, height:120 }}>
+            <div style={{ ...shimmer, height:32, width:32, marginBottom:12 }} />
+            <div style={{ ...shimmer, height:24, width:"60%", marginBottom:8 }} />
+            <div style={{ ...shimmer, height:12, width:"80%" }} />
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 /* ── Dashboard ── */
 function Dashboard({ setPage }) {
-  const [records, setRecords] = useState([]);
+  const [stats,   setStats]   = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState(null);
   const [selMonth, setSelMonth] = useState(THIS_MONTH.slice(5, 7));
   const [selYear,  setSelYear]  = useState(THIS_MONTH.slice(0, 4));
 
   const selectedMonth = `${selYear}-${selMonth}`;
 
-  useEffect(() => {
-    const saved = JSON.parse(localStorage.getItem("patientRecords") || "[]");
-    setRecords(saved);
+  // ── ดึงข้อมูลจาก API ──
+  const fetchStats = useCallback(async (month) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await statsApi.getDashboard({ month });
+      setStats(data);
+    } catch (err) {
+      setError(err.message || "ไม่สามารถโหลดข้อมูลได้");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // ── Available years (from data + current year) ──
-  const availableYears = [...new Set(records.map((r) => (r.date || "").slice(0, 4)))]
-    .filter(Boolean).sort().reverse();
-  if (!availableYears.includes(selYear)) availableYears.unshift(selYear);
+  useEffect(() => {
+    fetchStats(selectedMonth);
+  }, [selectedMonth, fetchStats]);
 
-  const monthRec = records.filter((r) => (r.date || "").startsWith(selectedMonth));
+  // ── Derived values จาก API response ──
+  const totalVisits  = stats?.totalRecords   ?? 0;
+  const totalADR     = stats?.totalADR       ?? 0;
+  const adrRate      = stats?.adrRate        ?? 0;
+  const g3Events     = stats?.grade3Events   ?? 0;
+  const g3Rate       = stats?.grade3Rate     ?? 0;
 
-  const prevMonth = (() => {
-    const [y, m] = selectedMonth.split("-").map(Number);
-    return new Date(y, m - 2, 1).toISOString().slice(0, 7);
-  })();
-  const prevRec = records.filter((r) => (r.date || "").startsWith(prevMonth));
-
-  const totalVisits = monthRec.length;
-  const totalADR = monthRec.filter(hasADR).length;
-  const adrRate = totalVisits > 0 ? totalADR / totalVisits : 0;
-  const g3Events = totalGrade3Events(monthRec);
-  const g3Rate = totalVisits > 0 ? (g3Events / totalVisits) * 100 : 0;
+  // trend vs เดือนก่อน
+  const prevTotalVisits = stats?.prev?.totalRecords ?? 0;
+  const prevTotalADR    = stats?.prev?.totalADR     ?? 0;
   const calcTrend = (curr, prev) => prev ? Math.round(((curr - prev) / prev) * 100) : null;
 
-  const last6 = Array.from({ length: 6 }, (_, i) => {
-    const d = new Date(); d.setMonth(d.getMonth() - (5 - i));
-    return d.toISOString().slice(0, 7);
-  });
-  const visitBar = last6.map((ym) => ({ label: monthShort(ym), value: records.filter((r) => (r.date || "").startsWith(ym)).length }));
-  const adrBar   = last6.map((ym) => ({ label: monthShort(ym), value: records.filter((r) => (r.date || "").startsWith(ym) && hasADR(r)).length }));
+  // 6-month trend bars จาก API
+  const trendData = stats?.trend ?? [];
+  const visitBar  = trendData.map((t) => ({ label: monthShort(t.month), value: Number(t.total_records || 0) }));
+  const adrBar    = trendData.map((t) => ({ label: monthShort(t.month), value: Number(t.total_adr     || 0) }));
   const visitSpark = visitBar.map((d) => d.value);
   const adrSpark   = adrBar.map((d) => d.value);
 
-  // ── Symptom frequency ──
-  const freqMap = {};
-  monthRec.forEach((r) => {
-    Object.entries(r.symptoms || {}).forEach(([key, v]) => {
-      if (!v) return;
-      const label = typeof v === "object" ? (v.name || v.label || key) : String(key);
-      const grade = typeof v === "object" ? v.grade : v;
-      if (label && grade != null) freqMap[label] = (freqMap[label] || 0) + 1;
-    });
-  });
-
-  const allFreqSorted = Object.entries(freqMap)
-    .map(([name, count]) => ({ name, count }))
-    .filter((s) => s.count > 0)
-    .sort((a, b) => b.count - a.count);
-
+  // top symptoms จาก API
+  const topSymptoms = stats?.topSymptoms ?? [];
   const TOP_N = 5;
-  const top5 = allFreqSorted.slice(0, TOP_N);
-  const othersCount = allFreqSorted.slice(TOP_N).reduce((s, x) => s + x.count, 0);
-  const othersItems = allFreqSorted.slice(TOP_N);
-
+  const top5        = topSymptoms.slice(0, TOP_N);
+  const othersItems = topSymptoms.slice(TOP_N);
+  const othersCount = othersItems.reduce((s, x) => s + x.count, 0);
   const displayFreq = othersCount > 0
     ? [...top5, { name: `Others (${othersItems.length} รายการ)`, count: othersCount, isOthers: true }]
     : top5;
+  const freqLabels  = displayFreq.map((s) => s.name);
+  const freqValues  = displayFreq.map((s) => s.count);
+  const freqColors  = displayFreq.map((s, i) => s.isOthers ? OTHERS_COLOR : (SYMP_COLORS[i] || SYMP_COLORS[SYMP_COLORS.length - 1]));
+  const freqTotal   = topSymptoms.reduce((a, b) => a + b.count, 0);
 
-  const freqLabels = displayFreq.map((s) => s.name);
-  const freqValues = displayFreq.map((s) => s.count);
-  const freqColors = displayFreq.map((s, i) => s.isOthers ? OTHERS_COLOR : (SYMP_COLORS[i] || SYMP_COLORS[SYMP_COLORS.length - 1]));
-  const freqTotal = allFreqSorted.reduce((a, b) => a + b.count, 0);
+  // grade distribution จาก API
+  const gradeDist = stats?.gradeDist
+    ? [1,2,3,4,5].map((g) => ({ g, cnt: Number(stats.gradeDist[g] ?? 0) }))
+    : [1,2,3,4,5].map((g) => ({ g, cnt: 0 }));
 
-  const gradeDist = [1,2,3,4,5].map((g) => ({
-    g, cnt: monthRec.reduce((s,r) =>
-      s + Object.values(r.symptoms||{}).filter((v) => {
-        const grade = typeof v === "object" ? v?.grade : v;
-        return grade === g;
-      }).length, 0),
-  }));
+  // available years — ปีปัจจุบัน + ปีจาก trend
+  const trendYears = trendData.map((t) => t.month?.slice(0, 4)).filter(Boolean);
+  const availableYears = [...new Set([selYear, THIS_MONTH.slice(0, 4), ...trendYears])].sort().reverse();
 
   const now = new Date();
   const dateStr = now.toLocaleDateString("th-TH", { weekday:"long", year:"numeric", month:"long", day:"numeric" });
@@ -360,22 +354,38 @@ function Dashboard({ setPage }) {
       </div>
 
       <div style={S.body}>
+
+        {/* ── Error Banner ── */}
+        {error && (
+          <div style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:8, padding:"12px 16px", marginBottom:16, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <span style={{ fontSize:13, color:"#dc2626" }}>⚠ {error}</span>
+            <button
+              onClick={() => fetchStats(selectedMonth)}
+              style={{ fontSize:12, color:"#dc2626", background:"none", border:"1px solid #fca5a5", borderRadius:6, padding:"4px 10px", cursor:"pointer" }}>
+              ลองอีกครั้ง
+            </button>
+          </div>
+        )}
+
         {/* Section: Overview */}
         <div style={S.sectionRow}>
           <span style={S.sectionLabel}>Overview — {monthLabel(selectedMonth)}</span>
           <div style={S.divider} />
+          {loading && <span style={{ fontSize:11, color:"#94a3b8" }}>กำลังโหลด...</span>}
         </div>
 
         {/* Metric Cards */}
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(5, 1fr)", gap:12, marginBottom:20 }}>
-          {[
-            { label:"Visit ทั้งหมด", value:totalVisits, unit:"ครั้ง", desc:"Visit ที่ได้รับยาเคมีบำบัด", accentColor:"#939bac", icon:"", sparkData:visitSpark, trend:calcTrend(totalVisits, prevRec.length) },
-            { label:"ADR ที่พบ",     value:totalADR,    unit:"ราย",  desc:"Adverse drug reactions",      accentColor:"#939bac", icon:"", sparkData:adrSpark, trend:calcTrend(totalADR, prevRec.filter(hasADR).length) },
-            { label:"ADR Rate",      value:fmt2(adrRate), unit:"/ visit", desc:"อัตราเกิด ADR ต่อ visit", accentColor:"#939bac", icon:"" },
-            { label:"Grade ≥ 3",    value:g3Events, unit:"events", desc:"CTCAE severity grade ≥ 3",    accentColor:"#939bac", icon:"" },
-            { label:"Grade ≥ 3 Rate", value:fmt2(g3Rate), unit:"/ 100 visits", desc:"ต่อ 100 visit",   accentColor:"#939bac", icon:"" },
-          ].map((c) => <MetricCard key={c.label} {...c} />)}
-        </div>
+        {loading ? <LoadingSkeleton /> : (
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(5, 1fr)", gap:12, marginBottom:20 }}>
+            {[
+              { label:"Visit ทั้งหมด", value:totalVisits, unit:"ครั้ง", desc:"Visit ที่ได้รับยาเคมีบำบัด", accentColor:"#939bac", icon:"", sparkData:visitSpark, trend:calcTrend(totalVisits, prevTotalVisits) },
+              { label:"ADR ที่พบ",     value:totalADR,    unit:"ราย",  desc:"Adverse drug reactions",      accentColor:"#939bac", icon:"", sparkData:adrSpark, trend:calcTrend(totalADR, prevTotalADR) },
+              { label:"ADR Rate",      value:fmt2(adrRate), unit:"/ visit", desc:"อัตราเกิด ADR ต่อ visit", accentColor:"#939bac", icon:"" },
+              { label:"Grade ≥ 3",    value:g3Events, unit:"events", desc:"CTCAE severity grade ≥ 3",    accentColor:"#939bac", icon:"" },
+              { label:"Grade ≥ 3 Rate", value:fmt2(g3Rate), unit:"/ 100 visits", desc:"ต่อ 100 visit",   accentColor:"#939bac", icon:"" },
+            ].map((c) => <MetricCard key={c.label} {...c} />)}
+          </div>
+        )}
 
         {/* Trend Charts */}
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:16, marginBottom:16 }}>
@@ -433,9 +443,9 @@ function Dashboard({ setPage }) {
                 <div style={S.cardTitle}>Symptom Frequency</div>
                 <div style={S.cardSub}>
                   ความถี่อาการ ADR ที่พบในเดือนนี้
-                  {allFreqSorted.length > TOP_N && (
+                  {topSymptoms.length > TOP_N && (
                     <span style={{ marginLeft:6, fontSize:10, color:"#94a3b8" }}>
-                      · แสดง Top {TOP_N} จาก {allFreqSorted.length} รายการ
+                      · แสดง Top {TOP_N} จาก {topSymptoms.length} รายการ
                     </span>
                   )}
                 </div>
@@ -443,7 +453,7 @@ function Dashboard({ setPage }) {
               <span style={S.badge("#7c3aed","#f5f3ff")}>DISTRIBUTION</span>
             </div>
 
-            {allFreqSorted.length === 0 ? (
+            {topSymptoms.length === 0 ? (
               <div style={{ height:160, display:"flex", alignItems:"center", justifyContent:"center" }}>
                 <span style={{ fontSize:12, color:"#94a3b8" }}>ไม่มีข้อมูล ADR ในเดือนนี้</span>
               </div>

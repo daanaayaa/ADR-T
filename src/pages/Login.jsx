@@ -1,13 +1,5 @@
 import { useState } from "react";
-
-/* ─────────────────────────────────────────────
-   USERS DB  (เพิ่ม / แก้ไขผู้ใช้ได้ที่นี่)
-   role: "pharmacist" | "nurse"
-───────────────────────────────────────────── */
-const USERS = [
-  { username: "admin",   password: "1234", role: "pharmacist", name: "ภก. สมชาย ใจดี",  title: "Oncology Pharmacist" },
-  { username: "nurse01", password: "1234", role: "nurse",      name: "พย. สุภาพ รักดี", title: "Oncology Nurse" },
-];
+import { authApi } from "../services/api";
 
 export default function Login({ onLogin }) {
   const [username, setUsername] = useState("");
@@ -15,21 +7,20 @@ export default function Login({ onLogin }) {
   const [error, setError]       = useState("");
   const [loading, setLoading]   = useState(false);
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     setError("");
     setLoading(true);
-    setTimeout(() => {
-      const user = USERS.find(
-        (u) => u.username === username && u.password === password
-      );
-      if (user) {
-        onLogin({ role: user.role, name: user.name, title: user.title });
-      } else {
-        setError("Username หรือ Password ไม่ถูกต้อง");
-        setLoading(false);
-      }
-    }, 600);
+    try {
+      const { token, user } = await authApi.login({ username, password });
+      // เก็บ JWT token ไว้ใน localStorage เพื่อให้ api.js แนบใน Authorization header อัตโนมัติ
+      localStorage.setItem("adr_token", token);
+      onLogin({ role: user.role, name: user.name, title: user.title });
+    } catch (err) {
+      setError(err.message || "Username หรือ Password ไม่ถูกต้อง");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -72,7 +63,7 @@ export default function Login({ onLogin }) {
 
           {/* Footer */}
           <div style={s.leftFooter}>
-            v1.0 · ADR-T System<br />
+            v2.0 · ADR-T System<br />
             ข้อมูลผู้ป่วยเป็นความลับตาม พ.ร.บ. สุขภาพแห่งชาติ
           </div>
         </div>
