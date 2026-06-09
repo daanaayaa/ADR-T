@@ -7,6 +7,7 @@ import Records from "./pages/Records";
 import Dashboard from "./pages/Dashboard";
 import Report from "./pages/report";
 import Login from "./pages/Login";
+import RecordDetail from "./pages/RecordDetail";
 
 const PAGE_TITLES = {
   dashboard:  "Dashboard",
@@ -48,7 +49,6 @@ function savePage(page) {
   sessionStorage.setItem("adrPage", page);
 }
 
-/* ── Initial state for Step1 form ── */
 const INITIAL_VITAL = { date: "", cycle: "", dose: "", doseUnit: "", drugs: [] };
 
 function App() {
@@ -56,15 +56,22 @@ function App() {
   const [page, setPageState] = useState(loadPage);
   const [step, setStep]      = useState(1);
 
-  /* ── Step1 state (lifted up) ── */
+  /* ── Record Detail popup state ── */
+  const [detailId,      setDetailId]      = useState(null);
+  const [detailCanEdit, setDetailCanEdit] = useState(false);
+
+  /* ── Step1 state ── */
   const [step1Patient,   setStep1Patient]   = useState(null);
   const [step1Vital,     setStep1Vital]     = useState(INITIAL_VITAL);
   const [step1Encounter, setStep1Encounter] = useState(null);
 
-  /* ── Step2 state (lifted up) ── */
-  const [step2Symptoms,         setStep2Symptoms]         = useState([]);  // selectedSymptoms array
-  const [step2SymptomsGraded,   setStep2SymptomsGraded]   = useState({});  // { key: { grade, label, ... } }
-  const [step2Note,             setStep2Note]             = useState("");
+  /* ── Step2 state ── */
+  const [step2Symptoms,       setStep2Symptoms]       = useState([]);
+  const [step2SymptomsGraded, setStep2SymptomsGraded] = useState({});
+  const [step2Note,           setStep2Note]           = useState("");
+
+  /* ── Records refresh trigger ── */
+  const [recordsRefreshKey, setRecordsRefreshKey] = useState(0);
 
   /* ── Records ── */
   const [patientRecords, setPatientRecordsState] = useState(loadRecords);
@@ -86,10 +93,22 @@ function App() {
     setUser(null);
     savePage("dashboard");
     setPageState("dashboard");
+    setDetailId(null);
     setStep(1);
   };
 
-  /* Reset Step1+Step2 forms after successful save */
+  /* เปิด popup detail */
+  const handleOpenDetail = (id, canEdit) => {
+    setDetailId(id);
+    setDetailCanEdit(!!canEdit);
+  };
+
+  /* ปิด popup detail */
+  const handleCloseDetail = () => {
+    setDetailId(null);
+    setDetailCanEdit(false);
+  };
+
   const resetAssessment = () => {
     setStep1Patient(null);
     setStep1Vital(INITIAL_VITAL);
@@ -100,7 +119,13 @@ function App() {
     setStep(1);
   };
 
-  /* assessmentData derived from Step1 state — same shape Step2 already expects */
+  // เรียกหลัง Step2 บันทึกสำเร็จ: reset form + trigger Records refetch + navigate
+  const handleSaveSuccess = () => {
+    resetAssessment();
+    setRecordsRefreshKey((k) => k + 1); // บอก Records ให้ดึงข้อมูลใหม่ + reset filter
+    handleSetPage("records");
+  };
+
   const assessmentData = step1Patient ? {
     ...step1Vital,
     weight: step1Patient.weight,
@@ -147,7 +172,6 @@ function App() {
               {step === 1 && (
                 <Step1
                   next={() => setStep(2)}
-                  /* lifted state */
                   patient={step1Patient}
                   setPatient={setStep1Patient}
                   vital={step1Vital}
@@ -164,8 +188,7 @@ function App() {
                   assessmentData={assessmentData}
                   setPatientRecords={setPatientRecords}
                   onNavigate={handleSetPage}
-                  onSaveSuccess={resetAssessment}
-                  /* lifted state */
+                  onSaveSuccess={handleSaveSuccess}
                   selectedSymptoms={step2Symptoms}
                   setSelectedSymptoms={setStep2Symptoms}
                   symptoms={step2SymptomsGraded}
@@ -182,12 +205,24 @@ function App() {
               patientRecords={patientRecords}
               setPatientRecords={setPatientRecords}
               userRole={user.role}
+              onOpenDetail={handleOpenDetail}
+              refreshKey={recordsRefreshKey}
             />
           )}
 
           {page === "reports" && <Report />}
         </div>
       </main>
+
+      {/* ── Record Detail POPUP — rendered on top of everything, not replacing the page ── */}
+      {detailId && (
+        <RecordDetail
+          id={detailId}
+          canEdit={detailCanEdit}
+          onClose={handleCloseDetail}
+          onSaved={() => {}}
+        />
+      )}
     </div>
   );
 }

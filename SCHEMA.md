@@ -1,449 +1,195 @@
-# 📋 ADR-T System — Data Schema & API Reference
-
-> เอกสารนี้สำหรับทีม iMed/HIS เพื่อใช้ในการเชื่อมต่อระบบ  
-> **Base URL**: `http://localhost:5000`  
-> **Database**: JSON flat-file (data/*.json)  
-> **Content-Type**: `application/json`
-
----
-
-## 🗄️ Data Files
-
-ระบบใช้ไฟล์ JSON สำหรับเก็บข้อมูลใน `./data/` directory
-
-| ไฟล์             | คำอธิบาย                         |
-|-----------------|-----------------------------------|
-| `patients.json` | ข้อมูลผู้ป่วยทั้งหมด               |
-| `records.json`  | ADR records ทั้งหมด               |
-| `ctcae.json`    | ข้อมูล CTCAE (จัดกลุ่มตาม category) |
-
----
-
-## 🧩 Data Structures
-
-### 1. `patients` — ข้อมูลผู้ป่วย
-
-| Field         | Type    | Required | คำอธิบาย                                         |
-|---------------|---------|----------|--------------------------------------------------|
-| `hn`          | string  | ✅ YES   | Hospital Number **(Primary Key — match กับ iMed)** |
-| `name`        | string  | ✅ YES   | ชื่อ-นามสกุล                                      |
-| `age`         | number  | YES      | อายุ (ปี)                                         |
-| `gender`      | string  | YES      | เพศ เช่น `ชาย` / `หญิง`                           |
-| `weight`      | number  | YES      | น้ำหนัก (kg) — ใช้คำนวณ BSA                       |
-| `height`      | number  | YES      | ส่วนสูง (cm) — ใช้คำนวณ BSA                       |
-| `diagnosis`   | string  | YES      | การวินิจฉัย เช่น `CA Breast`, `Lymphoma`          |
-| `allergy`     | string  | NO       | ประวัติแพ้ยา                                      |
-| `createdAt`   | string  | auto     | ISO 8601 timestamp ที่เพิ่มข้อมูล                  |
-
-**BSA คำนวณจาก Mosteller formula:**
-```
-BSA (m²) = √( weight(kg) × height(cm) / 3600 )
-```
-
-**ตัวอย่าง Patient object:**
-```json
-{
-  "hn": "HN-001234",
-  "name": "นายสมชาย ใจดี",
-  "age": 55,
-  "gender": "ชาย",
-  "weight": 65,
-  "height": 170,
-  "diagnosis": "CA Breast",
-  "allergy": "Penicillin",
-  "createdAt": "2025-05-28T08:00:00.000Z"
-}
-```
-
----
-
-### 2. `records` — ADR Records (บันทึกอาการไม่พึงประสงค์)
-
-| Field            | Type    | Required | คำอธิบาย                                                         |
-|------------------|---------|----------|------------------------------------------------------------------|
-| `id`             | number  | auto     | timestamp-based ID (Date.now()) — **Primary Key**                |
-| `hn`             | string  | ✅ YES   | HN ของผู้ป่วย (FK → patients.hn)                                  |
-| `date`           | string  | ✅ YES   | วันที่บันทึก format: `YYYY-MM-DD`                                  |
-| `encounter_id`   | string  | NO       | VN หรือ AN ที่เชื่อมกับ encounter                                 |
-| `cycle`          | number  | NO       | รอบยาเคมีบำบัด                                                    |
-| `dose`           | number  | NO       | ขนาดยา                                                           |
-| `dose_unit`      | string  | NO       | หน่วยยา เช่น `mg/m²`, `mg/kg`, `mg`                              |
-| `drugs`          | array   | YES      | รายชื่อยาที่ผู้ป่วยได้รับ (string array)                          |
-| `symptoms`       | object  | YES      | อาการไม่พึงประสงค์ — **ดู Symptoms Object ด้านล่าง**              |
-| `note`           | string  | NO       | หมายเหตุเพิ่มเติม / คำแนะนำ                                      |
-| `recommendation` | string  | NO       | คำแนะนำการรักษา                                                   |
-| `follow_up_date` | string  | NO       | วันนัดติดตาม format: `YYYY-MM-DD`                                  |
-| `patientName`    | string  | NO       | ชื่อผู้ป่วย (denormalized เพื่อ search)                           |
-| `regimen`        | string  | NO       | สูตรยา (denormalized เพื่อ search)                                |
-| `createdAt`      | string  | auto     | ISO 8601 timestamp ที่บันทึก                                      |
-| `updatedAt`      | string  | auto     | ISO 8601 timestamp ที่แก้ไขล่าสุด                                 |
-
-#### `symptoms` Object Structure
-
-```json
-{
-  "nausea": {
-    "grade": 2,
-    "description": "Moderate nausea; decreased oral intake without significant weight loss",
-    "label": "Nausea",
-    "note": "",
-    "isCustom": false
-  },
-  "custom_1716864000123_ab3x1": {
-    "grade": 1,
-    "description": "Mild skin discoloration",
-    "label": "Skin hyperpigmentation",
-    "note": "บริเวณข้อพับ",
-    "isCustom": true
-  }
-}
-```
-
-| Field         | Type    | คำอธิบาย                                                         |
-|---------------|---------|------------------------------------------------------------------|
-| `[key]`       | string  | CTCAE term key เช่น `"nausea"` หรือ custom key `"custom_xxx_xxx"` |
-| `grade`       | number  | ระดับความรุนแรง 1–5 (ดูตาราง CTCAE Grade ด้านล่าง)               |
-| `description` | string  | คำอธิบายอาการตาม grade ที่เลือก                                   |
-| `label`       | string  | ชื่ออาการที่แสดงผล                                                |
-| `note`        | string  | บันทึกเพิ่มเติมเฉพาะอาการนี้                                      |
-| `isCustom`    | boolean | `true` = อาการที่เภสัชกรเพิ่มเอง (ไม่อยู่ใน CTCAE standard)      |
-
-#### CTCAE Grade Reference
-
-| Grade | ระดับ             | สี (UI)     |
-|-------|-------------------|-------------|
-| 1     | Mild              | 🟢 Emerald  |
-| 2     | Moderate          | 🟡 Amber    |
-| 3     | Severe            | 🟠 Orange   |
-| 4     | Life-threatening  | 🔴 Red      |
-| 5     | Fatal             | ⚫ Slate    |
-
-**ตัวอย่าง ADR Record object:**
-```json
-{
-  "id": 1716864000123,
-  "hn": "HN-001234",
-  "date": "2025-05-28",
-  "encounter_id": "VN-1716864000000",
-  "cycle": 2,
-  "dose": 80,
-  "dose_unit": "mg/m²",
-  "drugs": ["Paclitaxel", "Carboplatin"],
-  "symptoms": {
-    "nausea": {
-      "grade": 2,
-      "description": "Moderate nausea; decreased oral intake",
-      "label": "Nausea",
-      "note": "",
-      "isCustom": false
-    },
-    "peripheral_sensory_neuropathy": {
-      "grade": 1,
-      "description": "Asymptomatic; loss of deep tendon reflexes",
-      "label": "Peripheral sensory neuropathy",
-      "note": "มือและเท้าเล็กน้อย",
-      "isCustom": false
-    }
-  },
-  "note": "ปรับลดขนาดยา 10%",
-  "recommendation": "ติดตามอาการ",
-  "follow_up_date": "2025-06-11",
-  "createdAt": "2025-05-28T10:30:00.000Z"
-}
-```
-
----
-
-### 3. `ctcae` — CTCAE Master Data
-
-ไฟล์จัดกลุ่มตาม category (array of category objects):
-
-```json
-[
-  {
-    "category": "Gastrointestinal disorders",
-    "terms": [
-      {
-        "key": "nausea",
-        "label": "Nausea",
-        "options": [
-          { "grade": 1, "description": "Loss of appetite without alteration in eating habits" },
-          { "grade": 2, "description": "Decreased oral intake without significant weight loss" },
-          { "grade": 3, "description": "Inadequate caloric or fluid intake; hospitalization indicated" }
-        ]
-      }
-    ]
-  }
-]
-```
-
-| Field          | Type   | คำอธิบาย                                   |
-|----------------|--------|---------------------------------------------|
-| `category`     | string | ชื่อหมวดอาการ (CTCAE v5 system organ class)  |
-| `terms`        | array  | รายการอาการในหมวดนั้น                        |
-| `terms[].key`  | string | key สำหรับ reference ใน symptoms object      |
-| `terms[].label`| string | ชื่อแสดงผล                                  |
-| `terms[].options` | array | ตัวเลือก grade และคำอธิบาย                |
-
----
-
-## 🔌 API Endpoints
-
-### 🏥 Patients — `/api/patients`
-
-| Method | Endpoint               | คำอธิบาย                                |
-|--------|------------------------|----------------------------------------|
-| GET    | `/api/patients`        | ดึงรายชื่อผู้ป่วยทั้งหมด / ค้นหา         |
-| GET    | `/api/patients/:hn`    | ดึงข้อมูลผู้ป่วยรายบุคคลตาม HN           |
-| POST   | `/api/patients`        | เพิ่มผู้ป่วยใหม่                         |
-| PUT    | `/api/patients/:hn`    | แก้ไขข้อมูลผู้ป่วย (HN ไม่เปลี่ยนได้)    |
-
-**GET `/api/patients`** — Query Params:
-
-| Param | Type   | คำอธิบาย                             |
-|-------|--------|--------------------------------------|
-| `q`   | string | ค้นหาตาม HN หรือ ชื่อ (case-insensitive) |
-
-**POST `/api/patients`** — Request Body:
-```json
-{
-  "hn": "HN-001234",
-  "name": "นายสมชาย ใจดี",
-  "age": 55,
-  "gender": "ชาย",
-  "weight": 65,
-  "height": 170,
-  "diagnosis": "CA Breast",
-  "allergy": ""
-}
-```
-
-> ⚠️ HN ต้องไม่ซ้ำในระบบ — server จะ reject ด้วย `409 Conflict` หากมีอยู่แล้ว
-
----
-
-### 🔬 CTCAE — `/api/ctcae`
-
-| Method | Endpoint          | คำอธิบาย                                    |
-|--------|-------------------|--------------------------------------------|
-| GET    | `/api/ctcae`      | ดึงทั้งหมด จัดกลุ่มตาม category              |
-| GET    | `/api/ctcae/terms`| ดึงเฉพาะ terms ทั้งหมด (flat array)          |
-
-**Query Params (ทั้งสอง endpoint):**
-
-| Param | Type   | คำอธิบาย                               |
-|-------|--------|----------------------------------------|
-| `q`   | string | ค้นหาตาม label หรือ key (case-insensitive) |
-
----
-
-### 📝 ADR Records — `/api/records`
-
-| Method | Endpoint            | คำอธิบาย                              |
-|--------|---------------------|--------------------------------------|
-| GET    | `/api/records`      | ดึง records ทั้งหมด (รองรับหลาย filter) |
-| GET    | `/api/records/:id`  | ดึง record รายบุคคลตาม ID             |
-| POST   | `/api/records`      | บันทึก ADR record ใหม่                |
-| PUT    | `/api/records/:id`  | แก้ไข record (id และ createdAt ล็อค)  |
-| DELETE | `/api/records/:id`  | ลบ record                             |
-
-**GET `/api/records`** — Query Params:
-
-| Param   | Type   | Format    | คำอธิบาย                               |
-|---------|--------|-----------|----------------------------------------|
-| `hn`    | string | —         | กรองตาม HN                             |
-| `month` | string | `YYYY-MM` | กรองตามเดือน                           |
-| `grade` | number | 1–5       | กรองเฉพาะ record ที่มี grade >= ค่าที่ระบุ |
-| `q`     | string | —         | ค้นหาทั่วไป (HN / ชื่อ / regimen / note) |
-
-> ผลลัพธ์เรียงจากใหม่ไปเก่าตาม `date`
-
-**POST `/api/records`** — Request Body:
-```json
-{
-  "hn": "HN-001234",
-  "date": "2025-05-28",
-  "encounter_id": "VN-1716864000000",
-  "cycle": 2,
-  "dose": 80,
-  "dose_unit": "mg/m²",
-  "drugs": ["Paclitaxel", "Carboplatin"],
-  "symptoms": {
-    "nausea": {
-      "grade": 2,
-      "description": "Moderate nausea; decreased oral intake",
-      "label": "Nausea",
-      "note": "",
-      "isCustom": false
-    }
-  },
-  "note": "ปรับลดขนาดยา 10%",
-  "recommendation": "ติดตามอาการ",
-  "follow_up_date": "2025-06-11"
-}
-```
-
-> ⚠️ Required fields: `hn`, `date`  
-> `id` และ `createdAt` จะถูก assign อัตโนมัติโดย server
-
----
-
-### 📊 Dashboard Stats — `/api/stats`
-
-| Method | Endpoint     | คำอธิบาย                            |
-|--------|--------------|-------------------------------------|
-| GET    | `/api/stats` | ดึงสถิติสรุปสำหรับ Dashboard          |
-
-**GET `/api/stats`** — Query Params:
-
-| Param   | Type   | Format    | คำอธิบาย                                      |
-|---------|--------|-----------|-----------------------------------------------|
-| `month` | string | `YYYY-MM` | เดือนที่ต้องการดูสถิติ (default = เดือนปัจจุบัน) |
-
-**Response Schema:**
-```json
-{
-  "month": "2025-05",
-  "totalRecords": 42,
-  "totalADR": 35,
-  "adrRate": 0.8333,
-  "grade3Events": 5,
-  "grade3Rate": 11.90,
-  "gradeDist": { "1": 18, "2": 12, "3": 4, "4": 1, "5": 0 },
-  "topSymptoms": [
-    { "name": "Nausea", "count": 20 },
-    { "name": "Fatigue", "count": 15 }
-  ],
-  "trend": [
-    { "month": "2024-12", "totalRecords": 30, "totalADR": 25, "grade3Events": 3 },
-    { "month": "2025-01", "totalRecords": 35, "totalADR": 28, "grade3Events": 4 }
-  ],
-  "prev": {
-    "month": "2025-04",
-    "totalRecords": 38,
-    "totalADR": 31
-  },
-  "allTime": {
-    "totalRecords": 250,
-    "totalADR": 205,
-    "grade3Events": 28
-  }
-}
-```
-
-| Field         | คำอธิบาย                                             |
-|---------------|------------------------------------------------------|
-| `totalRecords`| จำนวน records ทั้งหมดในเดือนที่เลือก                  |
-| `totalADR`    | จำนวน records ที่มี ADR (symptoms ที่ไม่ null)         |
-| `adrRate`     | อัตราส่วน ADR/totalRecords (0–1)                      |
-| `grade3Events`| จำนวนอาการ grade ≥ 3 ในเดือนนั้น                      |
-| `grade3Rate`  | เปอร์เซ็นต์ grade3Events/totalRecords (0–100)         |
-| `gradeDist`   | จำนวนอาการแยกตาม grade 1–5                            |
-| `topSymptoms` | อาการที่พบบ่อย 10 อันดับแรก                           |
-| `trend`       | แนวโน้ม 6 เดือนย้อนหลัง                               |
-| `prev`        | สถิติเดือนก่อนหน้า (เพื่อเปรียบเทียบ)                 |
-| `allTime`     | สถิติรวมทุกเดือนทุกเวลา                                |
-
----
-
-## 📐 ER Diagram
-
-```mermaid
-erDiagram
-    patients ||--o{ records : "hn"
-
-    patients {
-        string hn PK
-        string name
-        number age
-        string gender
-        number weight
-        number height
-        string diagnosis
-        string allergy
-        string createdAt
-    }
-
-    records {
-        number id PK
-        string hn FK
-        string date
-        string encounter_id
-        number cycle
-        number dose
-        string dose_unit
-        array drugs
-        object symptoms
-        string note
-        string recommendation
-        string follow_up_date
-        string createdAt
-        string updatedAt
-    }
-
-    ctcae {
-        string category
-        array terms
-    }
-```
-
----
-
-## 🔗 จุดเชื่อมต่อที่แนะนำสำหรับ iMed/HIS Integration
-
-### 1. Sync ข้อมูลผู้ป่วย (Patient Sync)
-- เมื่อผู้ป่วยลงทะเบียน/เข้ารับบริการใน iMed → `POST /api/patients`
-- **Key ที่ใช้ match**: `hn` = HN จาก iMed
-- เภสัชกรค้นหาผู้ป่วยด้วย HN หรือชื่อใน Step 1
-
-### 2. Sync Encounter (VN / AN)
-- ใช้ `encounter_id` ใน record เพื่อ reference VN หรือ AN จาก iMed
-- format: `VN-{timestamp}` (OPD) หรือ `AN-{timestamp}` (IPD)
-
-### 3. ดึง ADR Records
-- `GET /api/records?hn=HN-001234` → ประวัติ ADR ทั้งหมดของผู้ป่วย
-- `GET /api/records?month=2025-05` → records รายเดือน
-- `GET /api/records?grade=3` → เฉพาะ grade ≥ 3 (severe events)
-
-### 4. Dashboard Integration
-- `GET /api/stats?month=YYYY-MM` → สถิติสรุปสำหรับ management dashboard
-
----
-
-## 💊 Drug Options (Frontend Reference)
-
-ยาที่รองรับใน dropdown ของ Step 1:
-
-```
-Paclitaxel, Carboplatin, Trastuzumab, Pertuzumab,
-Oxaliplatin, 5-FU, Cisplatin, Docetaxel
-```
-
----
-
-## ⚙️ Environment
-
-```env
-PORT=5000
-```
-
-**Data directory:** `./data/` (สร้างอัตโนมัติถ้ายังไม่มี)
-
----
-
-## 🚨 HTTP Status Codes
-
-| Code | ความหมาย                                         |
-|------|--------------------------------------------------|
-| 200  | สำเร็จ                                           |
-| 201  | สร้างข้อมูลใหม่สำเร็จ                             |
-| 400  | Request body ไม่ถูกต้อง / ขาด required fields     |
-| 404  | ไม่พบ resource ที่ร้องขอ                           |
-| 409  | ข้อมูลซ้ำ (เช่น HN มีในระบบแล้ว)                 |
-| 500  | Internal Server Error                            |
-
----
-
-> 📌 **หมายเหตุ**: เอกสารนี้สร้างจาก codebase เมื่อ 4 มิ.ย. 2569  
-> ระบบ ADR-T · โรงพยาบาลกรุงเทพสิริโรจน์ · ฝ่ายเภสัชกรรม  
-> หากมีคำถามหรือต้องการ endpoint เพิ่ม ติดต่อทีม dev ได้เลยครับ
+-- ============================================================
+--  ADR-T  ·  MySQL Local Schema
+--  โรงพยาบาลกรุงเทพสิริโรจน์ · ฝ่ายเภสัชกรรม
+--  แปลงจาก PostgreSQL → MySQL 8.0+
+-- ============================================================
+
+CREATE DATABASE IF NOT EXISTS adrt_db
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+USE adrt_db;
+
+-- ── 1. users ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+  id            INT            NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  username      VARCHAR(50)    NOT NULL UNIQUE,
+  password_hash VARCHAR(255)   NOT NULL,
+  role          ENUM('pharmacist','doctor','nurse') NOT NULL DEFAULT 'nurse',
+  name          VARCHAR(100)   NOT NULL,
+  title         VARCHAR(50)    DEFAULT NULL,
+  is_active     TINYINT(1)     NOT NULL DEFAULT 1,
+  created_at    DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- ── 2. patients ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS patients (
+  hn            VARCHAR(20)    NOT NULL PRIMARY KEY,
+  patient_name  VARCHAR(150)   NOT NULL,
+  age           INT            DEFAULT NULL,
+  gender        VARCHAR(10)    DEFAULT NULL,
+  weight        DECIMAL(6,2)   DEFAULT NULL,
+  height        DECIMAL(6,2)   DEFAULT NULL,
+  diagnosis     TEXT           DEFAULT NULL,
+  created_at    DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- ── 3. encounters ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS encounters (
+  id            INT            NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  hn            VARCHAR(20)    NOT NULL,
+  type          ENUM('OPD','IPD') NOT NULL DEFAULT 'OPD',
+  vn            VARCHAR(30)    DEFAULT NULL,
+  an            VARCHAR(30)    DEFAULT NULL,
+  visit_date    DATE           NOT NULL,
+  created_by    INT            DEFAULT NULL,
+  created_at    DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_enc_patient  FOREIGN KEY (hn)         REFERENCES patients(hn)  ON DELETE CASCADE,
+  CONSTRAINT fk_enc_user     FOREIGN KEY (created_by) REFERENCES users(id)     ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE INDEX idx_enc_hn_date ON encounters(hn, visit_date);
+
+-- ── 4. drugs ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS drugs (
+  id          INT          NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  name        VARCHAR(200) NOT NULL UNIQUE,
+  is_active   TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+-- ── 5. ctcae_categories ───────────────────────────────────
+CREATE TABLE IF NOT EXISTS ctcae_categories (
+  id          INT          NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  category    VARCHAR(100) NOT NULL UNIQUE,
+  sort_order  INT          NOT NULL DEFAULT 0
+) ENGINE=InnoDB;
+
+-- ── 6. ctcae_terms ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ctcae_terms (
+  id          INT          NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  category_id INT          NOT NULL,
+  `key`       VARCHAR(100) NOT NULL UNIQUE,
+  label       VARCHAR(200) NOT NULL,
+  is_custom   TINYINT(1)   NOT NULL DEFAULT 0,
+  CONSTRAINT fk_term_cat FOREIGN KEY (category_id) REFERENCES ctcae_categories(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ── 7. ctcae_grade_descriptions ───────────────────────────
+CREATE TABLE IF NOT EXISTS ctcae_grade_descriptions (
+  id          INT          NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  term_id     INT          NOT NULL,
+  grade       TINYINT      NOT NULL,
+  description TEXT         DEFAULT NULL,
+  UNIQUE KEY uq_term_grade (term_id, grade),
+  CONSTRAINT fk_grade_term FOREIGN KEY (term_id) REFERENCES ctcae_terms(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ── 8. adr_records ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS adr_records (
+  id              INT            NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  encounter_id    INT            DEFAULT NULL,
+  hn              VARCHAR(20)    NOT NULL,
+  record_date     DATE           NOT NULL,
+  cycle           VARCHAR(20)    DEFAULT NULL,
+  dose            DECIMAL(10,2)  DEFAULT NULL,
+  dose_unit       VARCHAR(20)    DEFAULT NULL,
+  note            TEXT           DEFAULT NULL,
+  recommendation  TEXT           DEFAULT NULL,
+  follow_up_date  DATE           DEFAULT NULL,
+  created_by      INT            DEFAULT NULL,
+  updated_by      INT            DEFAULT NULL,
+  created_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_rec_patient  FOREIGN KEY (hn)           REFERENCES patients(hn)  ON DELETE CASCADE,
+  CONSTRAINT fk_rec_enc      FOREIGN KEY (encounter_id) REFERENCES encounters(id) ON DELETE SET NULL,
+  CONSTRAINT fk_rec_creator  FOREIGN KEY (created_by)   REFERENCES users(id)     ON DELETE SET NULL,
+  CONSTRAINT fk_rec_updater  FOREIGN KEY (updated_by)   REFERENCES users(id)     ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE INDEX idx_rec_hn_date ON adr_records(hn, record_date);
+
+-- ── 9. adr_record_drugs ───────────────────────────────────
+CREATE TABLE IF NOT EXISTS adr_record_drugs (
+  id          INT          NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  record_id   INT          NOT NULL,
+  drug_name   VARCHAR(200) NOT NULL,
+  CONSTRAINT fk_rdrug_rec FOREIGN KEY (record_id) REFERENCES adr_records(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ── 10. adr_symptoms ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS adr_symptoms (
+  id                INT          NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  record_id         INT          NOT NULL,
+  term_id           INT          DEFAULT NULL,
+  custom_key        VARCHAR(100) DEFAULT NULL,
+  custom_label      VARCHAR(200) DEFAULT NULL,
+  grade             TINYINT      NOT NULL,
+  description       TEXT         DEFAULT NULL,
+  note              TEXT         DEFAULT NULL,
+  additional_detail TEXT         DEFAULT NULL,
+  CONSTRAINT fk_sym_rec  FOREIGN KEY (record_id) REFERENCES adr_records(id)  ON DELETE CASCADE,
+  CONSTRAINT fk_sym_term FOREIGN KEY (term_id)   REFERENCES ctcae_terms(id)  ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE INDEX idx_sym_record ON adr_symptoms(record_id);
+
+-- ══════════════════════════════════════════════════════════
+--  VIEWs
+-- ══════════════════════════════════════════════════════════
+
+-- view_adr_summary: สรุปแต่ละ record พร้อม max_grade, drug list, symptom summary
+CREATE OR REPLACE VIEW view_adr_summary AS
+SELECT
+  r.id,
+  r.hn,
+  p.patient_name,
+  p.diagnosis,
+  r.record_date,
+  r.cycle,
+  r.dose,
+  r.dose_unit,
+  r.note,
+  r.recommendation,
+  r.follow_up_date,
+  r.created_by,
+  r.created_at,
+  r.updated_at,
+  r.encounter_id,
+  e.type                                           AS encounter_type,
+  -- รายชื่อยา: GROUP_CONCAT แทน STRING_AGG ของ PostgreSQL
+  (SELECT GROUP_CONCAT(d.drug_name ORDER BY d.drug_name SEPARATOR ', ')
+   FROM adr_record_drugs d WHERE d.record_id = r.id)            AS drugs,
+  -- max grade
+  (SELECT MAX(s.grade) FROM adr_symptoms s WHERE s.record_id = r.id)          AS max_grade,
+  -- symptom count
+  (SELECT COUNT(*) FROM adr_symptoms s WHERE s.record_id = r.id)              AS symptom_count,
+  -- grade 3+ count
+  (SELECT COUNT(*) FROM adr_symptoms s WHERE s.record_id = r.id AND s.grade >= 3) AS grade3_plus_count,
+  -- symptoms JSON: GROUP_CONCAT เป็น key=grade สำหรับ backward compat
+  (SELECT GROUP_CONCAT(
+            CONCAT(COALESCE(t2.`key`, s2.custom_key), ':', s2.grade)
+            ORDER BY s2.id SEPARATOR ';')
+   FROM adr_symptoms s2
+   LEFT JOIN ctcae_terms t2 ON t2.id = s2.term_id
+   WHERE s2.record_id = r.id)                                   AS symptoms
+FROM adr_records r
+JOIN patients p    ON p.hn = r.hn
+LEFT JOIN encounters e ON e.id = r.encounter_id;
+
+-- ══════════════════════════════════════════════════════════
+--  Seed: default pharmacist user
+--  password = "admin1234"  (bcrypt $2b$10$...)
+--  *** เปลี่ยน password ก่อน production ***
+-- ══════════════════════════════════════════════════════════
+
+INSERT IGNORE INTO users (username, password_hash, role, name, title)
+VALUES (
+  'pharmacist01',
+  '$2b$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',  -- "password"
+  'pharmacist',
+  'เภสัชกร ทดสอบ',
+  'ภ.บ.'
+);

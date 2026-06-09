@@ -176,7 +176,7 @@ function PreviewModal({ patient, assessmentData, symptoms, note, onConfirm, onCl
           <div className="bg-blue-50 border border-blue-100 rounded-xl p-4">
             <p className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-3">ข้อมูลผู้ป่วย</p>
             <div className="grid grid-cols-2 gap-y-2 gap-x-6 text-sm">
-              <div><span className="text-slate-400">ชื่อ-สกุล</span><p className="font-bold text-slate-800 mt-0.5">{patient?.name}</p></div>
+              <div><span className="text-slate-400">ชื่อ-สกุล</span><p className="font-bold text-slate-800 mt-0.5">{patient?.patient_name}</p></div>
               <div><span className="text-slate-400">HN</span><p className="font-bold text-slate-800 mt-0.5">{patient?.hn}</p></div>
               <div><span className="text-slate-400">Diagnosis</span><p className="font-semibold text-red-700 mt-0.5">{patient?.diagnosis}</p></div>
               <div><span className="text-slate-400">Regimen</span><p className="font-bold text-slate-800 mt-0.5">{regimen || "-"}</p></div>
@@ -193,22 +193,35 @@ function PreviewModal({ patient, assessmentData, symptoms, note, onConfirm, onCl
             ) : (
               <div className="space-y-2">
                 {symptomEntries.map(([key, val]) => (
-                  <div key={key} className={`flex items-center justify-between rounded-xl border px-4 py-3 ${GRADE_COLORS[val.grade]}`}>
-                    <div className="flex-1 min-w-0 pr-3">
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-semibold">{val.label}</p>
-                        {val.isCustom && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-white/40 border border-current opacity-70">Custom</span>
-                        )}
+                  <div key={key} className={`rounded-xl border overflow-hidden ${GRADE_COLORS[val.grade]}`}>
+                    <div className="flex items-center justify-between px-4 py-3">
+                      <div className="flex-1 min-w-0 pr-3">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold">{val.label}</p>
+                          {val.isCustom && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-white/40 border border-current opacity-70">Custom</span>
+                          )}
+                        </div>
+                        <p className="text-xs mt-0.5 opacity-75 line-clamp-2">{val.description}</p>
                       </div>
-                      <p className="text-xs mt-0.5 opacity-75 line-clamp-2">{val.description}</p>
+                      <div className="flex-shrink-0 text-right">
+                        <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border ${GRADE_COLORS[val.grade]}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${GRADE_DOT[val.grade]}`} />
+                          G{val.grade} · {GRADE_LABEL[val.grade]}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex-shrink-0 text-right">
-                      <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border ${GRADE_COLORS[val.grade]}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${GRADE_DOT[val.grade]}`} />
-                        G{val.grade} · {GRADE_LABEL[val.grade]}
-                      </span>
-                    </div>
+                    {val.additionalDetail && (
+                      <div className="px-4 py-2.5 border-t border-current/10 bg-black/5">
+                        <p className="text-[10px] font-bold uppercase tracking-widest opacity-60 mb-1 flex items-center gap-1">
+                          <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+                          </svg>
+                          รายละเอียดเพิ่มเติม
+                        </p>
+                        <p className="text-xs opacity-80 leading-relaxed whitespace-pre-line">{val.additionalDetail}</p>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -293,6 +306,7 @@ function Step2({
           description: firstOption.description,
           grade: firstOption.grade,
           isCustom: true,
+          additionalDetail: "",
         },
       }));
     }
@@ -306,7 +320,20 @@ function Step2({
   const handleSelect = (key, option, label, isCustom = false) => {
     setSymptoms((p) => ({
       ...p,
-      [key]: { label, description: option.description, grade: option.grade, isCustom },
+      [key]: {
+        label,
+        description: option.description,
+        grade: option.grade,
+        isCustom,
+        additionalDetail: p[key]?.additionalDetail || "",
+      },
+    }));
+  };
+
+  const handleAdditionalDetail = (key, text) => {
+    setSymptoms((p) => ({
+      ...p,
+      [key]: { ...p[key], additionalDetail: text },
     }));
   };
 
@@ -324,6 +351,13 @@ function Step2({
           dose:     assessmentData?.dose,
           doseUnit: assessmentData?.doseUnit,
           drugs:    assessmentData?.drugs || [],
+          weight:   patient?.weight || assessmentData?.weight || "",
+          height:   patient?.height || assessmentData?.height || "",
+          bsa:      assessmentData?.bsa || (() => {
+            const w = parseFloat(patient?.weight || assessmentData?.weight);
+            const h = parseFloat(patient?.height || assessmentData?.height);
+            return w && h ? Math.sqrt((w * h) / 3600).toFixed(2) : "";
+          })(),
         },
         symptoms,
         note,
@@ -337,7 +371,8 @@ function Step2({
       setTimeout(() => {
         setPreviewOpen(false);
         setSaved(false);
-        if (onSaveSuccess) onSaveSuccess();
+        // ส่ง { resetFilter: true } ให้ parent รู้ว่าต้องล้าง filter + refetch
+        if (onSaveSuccess) onSaveSuccess({ resetFilter: true });
       }, 1000);
     } catch (err) {
       setSaveError(err.message || "บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
@@ -392,7 +427,7 @@ function Step2({
         <div className="bg-white">
           <div className="flex items-start justify-between px-6 pt-4 pb-3 border-b border-slate-100">
             <div>
-              <h2 className="text-xl font-black text-slate-800 tracking-tight">{patient?.name}</h2>
+              <h2 className="text-xl font-black text-slate-800 tracking-tight">{patient?.patient_name}</h2>
               <p className="text-xs text-red-600 font-semibold mt-1 bg-red-50 border border-red-100 px-2 py-0.5 rounded-md inline-block">{patient?.diagnosis}</p>
             </div>
             <div className="text-center flex-shrink-0">
@@ -546,6 +581,23 @@ function Step2({
                             className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-500 text-slate-400 transition text-sm font-bold"
                             title="ลบอาการนี้">×</button>
                         </div>
+                        {symptoms[symptom.key] && (
+                          <div className="mt-2.5">
+                            <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+                              <svg className="w-3 h-3 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+                              </svg>
+                              รายละเอียดเพิ่มเติมของอาการ
+                            </label>
+                            <textarea
+                              rows={3}
+                              value={symptoms[symptom.key]?.additionalDetail || ""}
+                              onChange={(e) => handleAdditionalDetail(symptom.key, e.target.value)}
+                              placeholder={`เช่น\n• คลื่นไส้หลังให้ยา 2 ชั่วโมง\n• รับประทานอาหารได้น้อยลง`}
+                              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-xs text-slate-700 placeholder:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent resize-none transition leading-relaxed bg-slate-50/60"
+                            />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

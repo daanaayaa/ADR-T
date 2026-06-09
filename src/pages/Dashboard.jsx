@@ -178,14 +178,7 @@ function MetricCard({ label, value, unit, desc, accentColor, icon, sparkData, tr
         <div style={{ marginTop:3, fontSize:12, fontWeight:600, color:"#334155" }}>{label}</div>
         <div style={{ marginTop:2, fontSize:11, color:"#94a3b8" }}>{desc}</div>
       </div>
-      {trend !== null && trend !== undefined && (
-        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-          <span style={{ fontSize:11, color: trend > 0 ? "#dc2626" : "#16a34a", fontWeight:600, fontFamily:"'IBM Plex Mono', monospace" }}>
-            {trend > 0 ? "▲" : "▼"} {Math.abs(trend)}%
-          </span>
-          <span style={{ fontSize:11, color:"#94a3b8" }}>vs เดือนก่อน</span>
-        </div>
-      )}
+
     </div>
   );
 }

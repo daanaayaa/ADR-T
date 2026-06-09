@@ -1,17 +1,17 @@
 /**
- * ADR-T Backend Server  (PostgreSQL edition)
+ * ADR-T Backend Server  (MySQL Local edition)
  * โรงพยาบาลกรุงเทพสิริโรจน์ · ฝ่ายเภสัชกรรม
  * ระบบติดตามอาการไม่พึงประสงค์จากยา (Pharmacovigilance)
  *
  * Dependencies:
- *   npm install express cors pg bcrypt jsonwebtoken dotenv
+ *   npm install express cors mysql2 bcrypt jsonwebtoken dotenv
  */
 
 require("dotenv").config();
 
 const express = require("express");
 const cors    = require("cors");
-const { Pool } = require("pg");
+const mysql   = require("mysql2/promise");
 const bcrypt  = require("bcrypt");
 const jwt     = require("jsonwebtoken");
 
@@ -30,42 +30,39 @@ app.use((req, _res, next) => {
 });
 
 // ─────────────────────────────────────────────
-//  Database Connection Pool (PostgreSQL)
+//  Database Connection Pool (MySQL)
 // ─────────────────────────────────────────────
 
-const pool = new Pool({
-  host: process.env.PGHOST,
-  port: process.env.PGPORT,
-  database: process.env.PGDATABASE,
-  user: process.env.PGUSER,
-  password: process.env.PGPASSWORD,
-
-  ssl: {
-    rejectUnauthorized: false,
-  },
-
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+const pool = mysql.createPool({
+  host:               process.env.DB_HOST     || "localhost",
+  port:               Number(process.env.DB_PORT) || 3306,
+  database:           process.env.DB_NAME     || "adrt_db",
+  user:               process.env.DB_USER     || "root",
+  password:           process.env.DB_PASSWORD || "",
+  waitForConnections: true,
+  connectionLimit:    10,
+  queueLimit:         0,
+  // ส่ง DATE column กลับเป็น string ตรงๆ ไม่แปลงเป็น JS Date
+  dateStrings:        true,
 });
 
-pool.on("error", (err) =>
-  console.error("[pg] Unexpected pool error:", err.message)
-);
+// ทดสอบ connection ตอนเริ่ม
+(async () => {
+  try {
+    const conn = await pool.getConnection();
+    await conn.query("SELECT 1");
+    conn.release();
+    console.log("✅ Connected to MySQL Local");
+  } catch (err) {
+    console.error("❌ MySQL Connection Error:", err.message);
+  }
+})();
 
-pool.query("SELECT NOW()")
-  .then(() => {
-    console.log("✅ Connected to Neon PostgreSQL");
-  })
-  .catch((err) => {
-    console.error("❌ Neon Connection Error:", err.message);
-  });
-  
 // ─────────────────────────────────────────────
 //  Auth helpers
 // ─────────────────────────────────────────────
 
-const JWT_SECRET  = process.env.JWT_SECRET || "change_me_in_production";
+const JWT_SECRET  = process.env.JWT_SECRET  || "change_me_in_production";
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "8h";
 
 function signToken(user) {
@@ -98,38 +95,38 @@ function requirePharmacist(req, res, next) {
 }
 
 // ─────────────────────────────────────────────
-//  Helper: build symptoms upsert from payload
+//  Helper: insert symptoms
 // ─────────────────────────────────────────────
 
 /**
  * Insert symptoms array into adr_symptoms table
- * @param {pg.PoolClient} client
- * @param {string} recordId
+ * @param {mysql2.Connection} conn  — connection ที่อยู่ใน transaction
+ * @param {string|number} recordId
  * @param {object} symptoms  { [key]: { grade, description, label, note, isCustom } }
  */
-async function insertSymptoms(client, recordId, symptoms = {}) {
+async function insertSymptoms(conn, recordId, symptoms = {}) {
   // ลบของเก่าก่อน (กรณี update)
-  await client.query("DELETE FROM adr_symptoms WHERE record_id = $1", [recordId]);
+  await conn.execute("DELETE FROM adr_symptoms WHERE record_id = ?", [recordId]);
 
   for (const [key, val] of Object.entries(symptoms)) {
     if (!val || !val.grade) continue;
 
     if (val.isCustom) {
-      await client.query(
-        `INSERT INTO adr_symptoms (record_id, custom_key, custom_label, grade, description, note)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [recordId, key, val.label || key, val.grade, val.description || "", val.note || ""]
+      await conn.execute(
+        `INSERT INTO adr_symptoms (record_id, custom_key, custom_label, grade, description, note, additional_detail)
+         VALUES (?,?,?,?,?,?,?)`,
+        [recordId, key, val.label || key, val.grade, val.description || "", val.note || "", val.additionalDetail || null]
       );
     } else {
       // หา term_id จาก key
-      const { rows } = await client.query(
-        "SELECT id FROM ctcae_terms WHERE key = $1", [key]
+      const [termRows] = await conn.execute(
+        "SELECT id FROM ctcae_terms WHERE `key` = ?", [key]
       );
-      const termId = rows[0]?.id || null;
-      await client.query(
-        `INSERT INTO adr_symptoms (record_id, term_id, custom_key, grade, description, note)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [recordId, termId, termId ? null : key, val.grade, val.description || "", val.note || ""]
+      const termId = termRows[0]?.id || null;
+      await conn.execute(
+        `INSERT INTO adr_symptoms (record_id, term_id, custom_key, grade, description, note, additional_detail)
+         VALUES (?,?,?,?,?,?,?)`,
+        [recordId, termId, termId ? null : key, val.grade, val.description || "", val.note || "", val.additionalDetail || null]
       );
     }
   }
@@ -140,7 +137,7 @@ async function insertSymptoms(client, recordId, symptoms = {}) {
 // ─────────────────────────────────────────────
 
 app.get("/", (_req, res) => {
-  res.json({ name: "ADR-T Backend (PostgreSQL)", version: "2.0.0", status: "running", time: new Date().toISOString() });
+  res.json({ name: "ADR-T Backend (MySQL)", version: "2.0.0", status: "running", time: new Date().toISOString() });
 });
 
 // ─────────────────────────────────────────────
@@ -154,8 +151,8 @@ app.post("/api/auth/login", async (req, res) => {
     return res.status(400).json({ message: "กรุณาระบุ username และ password" });
 
   try {
-    const { rows } = await pool.query(
-      "SELECT * FROM users WHERE username = $1 AND is_active = TRUE", [username]
+    const [rows] = await pool.execute(
+      "SELECT * FROM users WHERE username = ? AND is_active = TRUE", [username]
     );
     const user = rows[0];
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
@@ -172,8 +169,8 @@ app.post("/api/auth/login", async (req, res) => {
 /** GET /api/auth/me */
 app.get("/api/auth/me", requireAuth, async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      "SELECT id, username, role, name, title FROM users WHERE id = $1", [req.user.id]
+    const [rows] = await pool.execute(
+      "SELECT id, username, role, name, title FROM users WHERE id = ?", [req.user.id]
     );
     if (!rows[0]) return res.status(404).json({ message: "ไม่พบผู้ใช้" });
     res.json(rows[0]);
@@ -189,16 +186,26 @@ app.get("/api/auth/me", requireAuth, async (req, res) => {
 /** GET /api/patients?q= */
 app.get("/api/patients", requireAuth, async (req, res) => {
   const q = (req.query.q || "").trim();
+
   try {
     let query, params;
+
     if (q) {
-      query  = `SELECT * FROM patients WHERE hn ILIKE $1 OR name ILIKE $1 ORDER BY name`;
-      params = [`%${q}%`];
+      // MySQL ใช้ LIKE (case-insensitive โดย default บน utf8mb4_general_ci)
+      query = `
+        SELECT *
+        FROM patients
+        WHERE hn LIKE ?
+           OR patient_name LIKE ?
+        ORDER BY patient_name
+      `;
+      params = [`%${q}%`, `%${q}%`];
     } else {
-      query  = `SELECT * FROM patients ORDER BY name`;
+      query = `SELECT * FROM patients ORDER BY patient_name`;
       params = [];
     }
-    const { rows } = await pool.query(query, params);
+
+    const [rows] = await pool.execute(query, params);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -208,8 +215,13 @@ app.get("/api/patients", requireAuth, async (req, res) => {
 /** GET /api/patients/:hn */
 app.get("/api/patients/:hn", requireAuth, async (req, res) => {
   try {
-    const { rows } = await pool.query("SELECT * FROM patients WHERE hn = $1", [req.params.hn]);
-    if (!rows[0]) return res.status(404).json({ message: `ไม่พบผู้ป่วย HN: ${req.params.hn}` });
+    const [rows] = await pool.execute(
+      "SELECT * FROM patients WHERE hn = ?",
+      [req.params.hn]
+    );
+    if (!rows[0]) {
+      return res.status(404).json({ message: `ไม่พบผู้ป่วย HN: ${req.params.hn}` });
+    }
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -218,18 +230,29 @@ app.get("/api/patients/:hn", requireAuth, async (req, res) => {
 
 /** POST /api/patients */
 app.post("/api/patients", requireAuth, requirePharmacist, async (req, res) => {
-  const { hn, name, age, gender, weight, height, diagnosis, allergy } = req.body || {};
-  if (!hn || !name) return res.status(400).json({ message: "กรุณาระบุ HN และชื่อผู้ป่วย" });
+  const { hn, patient_name, age, gender, weight, height, diagnosis } = req.body || {};
+
+  if (!hn || !patient_name) {
+    return res.status(400).json({ message: "กรุณาระบุ HN และชื่อผู้ป่วย" });
+  }
+
   try {
-    const { rows } = await pool.query(
-      `INSERT INTO patients (hn, name, age, gender, weight, height, diagnosis, allergy)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (hn) DO NOTHING
-       RETURNING *`,
-      [hn, name, age, gender, weight, height, diagnosis, allergy]
+    // MySQL: INSERT IGNORE แทน ON CONFLICT DO NOTHING
+    const [result] = await pool.execute(
+      `INSERT IGNORE INTO patients (hn, patient_name, age, gender, weight, height, diagnosis)
+       VALUES (?,?,?,?,?,?,?)`,
+      [hn, patient_name, age, gender, weight, height, diagnosis]
     );
-    if (!rows[0]) return res.status(409).json({ message: `HN ${hn} มีอยู่ในระบบแล้ว` });
-    res.status(201).json({ message: "เพิ่มผู้ป่วยสำเร็จ", patient: rows[0] });
+
+    if (result.affectedRows === 0) {
+      return res.status(409).json({ message: `HN ${hn} มีอยู่ในระบบแล้ว` });
+    }
+
+    // MySQL ไม่มี RETURNING * → SELECT กลับหลัง INSERT
+    const [newRows] = await pool.execute(
+      "SELECT * FROM patients WHERE hn = ?", [hn]
+    );
+    res.status(201).json({ message: "เพิ่มผู้ป่วยสำเร็จ", patient: newRows[0] });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -237,16 +260,39 @@ app.post("/api/patients", requireAuth, requirePharmacist, async (req, res) => {
 
 /** PUT /api/patients/:hn */
 app.put("/api/patients/:hn", requireAuth, requirePharmacist, async (req, res) => {
-  const { name, age, gender, weight, height, diagnosis, allergy } = req.body || {};
+  const { patient_name, age, gender, weight, height, diagnosis } = req.body || {};
+
   try {
-    const { rows } = await pool.query(
-      `UPDATE patients SET name=$1, age=$2, gender=$3, weight=$4, height=$5,
-       diagnosis=$6, allergy=$7, updated_at=NOW()
-       WHERE hn=$8 RETURNING *`,
-      [name, age, gender, weight, height, diagnosis, allergy, req.params.hn]
+    const [result] = await pool.execute(
+      `UPDATE patients
+       SET patient_name=?, age=?, gender=?, weight=?, height=?, diagnosis=?, updated_at=NOW()
+       WHERE hn=?`,
+      [patient_name, age, gender, weight, height, diagnosis, req.params.hn]
     );
-    if (!rows[0]) return res.status(404).json({ message: `ไม่พบผู้ป่วย HN: ${req.params.hn}` });
-    res.json({ message: "อัปเดตข้อมูลผู้ป่วยสำเร็จ", patient: rows[0] });
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: `ไม่พบผู้ป่วย HN: ${req.params.hn}` });
+    }
+
+    const [updated] = await pool.execute(
+      "SELECT * FROM patients WHERE hn = ?", [req.params.hn]
+    );
+    res.json({ message: "อัปเดตข้อมูลผู้ป่วยสำเร็จ", patient: updated[0] });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+//  DRUGS
+// ─────────────────────────────────────────────
+
+app.get("/api/drugs", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      "SELECT id, name FROM drugs WHERE is_active = TRUE ORDER BY name"
+    );
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -264,23 +310,25 @@ app.get("/api/ctcae", requireAuth, async (req, res) => {
     if (q) {
       termQuery = `SELECT t.*, c.category FROM ctcae_terms t
                    JOIN ctcae_categories c ON c.id = t.category_id
-                   WHERE t.key ILIKE $1 OR t.label ILIKE $1
+                   WHERE t.\`key\` LIKE ? OR t.label LIKE ?
                    ORDER BY c.sort_order, t.label`;
-      params = [`%${q}%`];
+      params = [`%${q}%`, `%${q}%`];
     } else {
       termQuery = `SELECT t.*, c.category FROM ctcae_terms t
                    JOIN ctcae_categories c ON c.id = t.category_id
                    ORDER BY c.sort_order, t.label`;
       params = [];
     }
-    const { rows: terms } = await pool.query(termQuery, params);
+    const [terms] = await pool.execute(termQuery, params);
 
-    // ดึง grade descriptions
+    // ดึง grade descriptions (MySQL ใช้ IN แทน ANY($1))
     const termIds = terms.map((t) => t.id);
     let gradeMap  = {};
     if (termIds.length) {
-      const { rows: grades } = await pool.query(
-        `SELECT * FROM ctcae_grade_descriptions WHERE term_id = ANY($1)`, [termIds]
+      const placeholders = termIds.map(() => "?").join(",");
+      const [grades] = await pool.execute(
+        `SELECT * FROM ctcae_grade_descriptions WHERE term_id IN (${placeholders})`,
+        termIds
       );
       grades.forEach((g) => {
         if (!gradeMap[g.term_id]) gradeMap[g.term_id] = [];
@@ -311,15 +359,21 @@ app.get("/api/ctcae", requireAuth, async (req, res) => {
 /** GET /api/ctcae/terms?q= — flat list */
 app.get("/api/ctcae/terms", requireAuth, async (req, res) => {
   const q = (req.query.q || "").trim();
-  const params = q ? [`%${q}%`] : [];
-  const where  = q ? "WHERE t.key ILIKE $1 OR t.label ILIKE $1" : "";
   try {
-    const { rows } = await pool.query(
-      `SELECT t.id, t.key, t.label, t.is_custom, c.category
-       FROM ctcae_terms t JOIN ctcae_categories c ON c.id = t.category_id
-       ${where} ORDER BY t.label`,
-      params
-    );
+    let query, params;
+    if (q) {
+      query = `SELECT t.id, t.\`key\`, t.label, t.is_custom, c.category
+               FROM ctcae_terms t JOIN ctcae_categories c ON c.id = t.category_id
+               WHERE t.\`key\` LIKE ? OR t.label LIKE ?
+               ORDER BY t.label`;
+      params = [`%${q}%`, `%${q}%`];
+    } else {
+      query = `SELECT t.id, t.\`key\`, t.label, t.is_custom, c.category
+               FROM ctcae_terms t JOIN ctcae_categories c ON c.id = t.category_id
+               ORDER BY t.label`;
+      params = [];
+    }
+    const [rows] = await pool.execute(query, params);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -338,12 +392,16 @@ app.post("/api/encounters", requireAuth, async (req, res) => {
   try {
     const vn = type === "OPD" ? `VN-${Date.now()}` : null;
     const an = type === "IPD" ? `AN-${Date.now()}` : null;
-    const { rows } = await pool.query(
+    const [result] = await pool.execute(
       `INSERT INTO encounters (hn, type, vn, an, visit_date, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+       VALUES (?,?,?,?,?,?)`,
       [hn, type, vn, an, visit_date, req.user.id]
     );
-    res.status(201).json({ message: "สร้าง encounter สำเร็จ", encounter: rows[0] });
+    const encounterId = result.insertId;
+    const [encRows] = await pool.execute(
+      "SELECT * FROM encounters WHERE id = ?", [encounterId]
+    );
+    res.status(201).json({ message: "สร้าง encounter สำเร็จ", encounter: encRows[0] });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -353,8 +411,8 @@ app.post("/api/encounters", requireAuth, async (req, res) => {
 app.get("/api/encounters", requireAuth, async (req, res) => {
   const { hn } = req.query;
   try {
-    const { rows } = await pool.query(
-      `SELECT * FROM encounters WHERE hn = $1 ORDER BY visit_date DESC`, [hn]
+    const [rows] = await pool.execute(
+      `SELECT * FROM encounters WHERE hn = ? ORDER BY visit_date DESC`, [hn]
     );
     res.json(rows);
   } catch (err) {
@@ -373,30 +431,77 @@ app.get("/api/records", requireAuth, async (req, res) => {
   const params     = [];
 
   if (hn) {
+    conditions.push("v.hn = ?");
     params.push(hn);
-    conditions.push(`v.hn = $${params.length}`);
   }
   if (month) {
-    params.push(`${month}%`);
-    conditions.push(`v.record_date::text LIKE $${params.length}`);
+    // MySQL: DATE_FORMAT แทน TO_CHAR, LIKE แทน CAST::text LIKE
+    conditions.push("DATE_FORMAT(v.record_date, '%Y-%m') = ?");
+    params.push(month);
   }
   if (grade) {
+    conditions.push("v.max_grade >= ?");
     params.push(Number(grade));
-    conditions.push(`v.max_grade >= $${params.length}`);
   }
   if (q) {
-    params.push(`%${q}%`);
-    conditions.push(`(v.hn ILIKE $${params.length} OR v.patient_name ILIKE $${params.length})`);
+    // LIKE ใช้ param เดียวกัน 2 ครั้ง
+    conditions.push("(v.hn LIKE ? OR v.patient_name LIKE ?)");
+    params.push(`%${q}%`, `%${q}%`);
   }
 
   const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
 
   try {
-    const { rows } = await pool.query(
-      `SELECT * FROM view_adr_summary v ${where} ORDER BY record_date DESC`, params
+    // 1. ดึง record headers จาก view
+    const [rows] = await pool.execute(
+      `SELECT
+         v.id, v.hn, v.patient_name, v.record_date, v.cycle,
+         v.dose, v.dose_unit, v.note, v.recommendation, v.follow_up_date,
+         v.created_by, v.created_at, v.updated_at, v.drugs,
+         v.max_grade, v.symptom_count, v.grade3_plus_count, v.symptoms,
+         v.encounter_id, v.encounter_type, v.diagnosis,
+         COALESCE(e.vn, e2.vn) AS vn,
+         COALESCE(e.an, e2.an) AS an
+       FROM view_adr_summary v
+       LEFT JOIN encounters e  ON e.id = v.encounter_id
+       LEFT JOIN encounters e2 ON e2.hn = v.hn
+                               AND e2.visit_date = v.record_date
+       ${where}
+       ORDER BY v.record_date DESC`,
+      params
     );
-    res.json(rows);
+
+    if (rows.length === 0) return res.json([]);
+
+    // 2. batch join adr_symptoms (MySQL: IN แทน ANY)
+    const recordIds  = rows.map((r) => r.id);
+    const phs        = recordIds.map(() => "?").join(",");
+    const [allSyms]  = await pool.execute(
+      `SELECT s.id, s.record_id, s.grade, s.description, s.note, s.additional_detail,
+              s.custom_key, s.custom_label,
+              t.\`key\` AS term_key, t.label AS term_label
+       FROM adr_symptoms s
+       LEFT JOIN ctcae_terms t ON t.id = s.term_id
+       WHERE s.record_id IN (${phs})`,
+      recordIds
+    );
+
+    // 3. group symptoms → map ตาม record_id
+    const symsMap = {};
+    allSyms.forEach((s) => {
+      if (!symsMap[s.record_id]) symsMap[s.record_id] = [];
+      symsMap[s.record_id].push(s);
+    });
+
+    // 4. แนบ symptomsDetail เข้าทุก record
+    const result = rows.map((r) => ({
+      ...r,
+      symptomsDetail: symsMap[r.id] || [],
+    }));
+
+    res.json(result);
   } catch (err) {
+    console.error("[GET /api/records]", err.message);
     res.status(500).json({ message: err.message });
   }
 });
@@ -404,17 +509,29 @@ app.get("/api/records", requireAuth, async (req, res) => {
 /** GET /api/records/:id */
 app.get("/api/records/:id", requireAuth, async (req, res) => {
   try {
-    // record header
-    const { rows: recs } = await pool.query(
-      "SELECT * FROM view_adr_summary WHERE id = $1", [req.params.id]
+    const [recs] = await pool.execute(
+      `SELECT
+         v.id, v.hn, v.patient_name, v.record_date, v.cycle,
+         v.dose, v.dose_unit, v.note, v.recommendation, v.follow_up_date,
+         v.created_by, v.created_at, v.updated_at, v.drugs,
+         v.max_grade, v.symptom_count, v.grade3_plus_count, v.symptoms,
+         v.encounter_id, v.encounter_type, v.diagnosis,
+         COALESCE(e.vn, e2.vn) AS vn,
+         COALESCE(e.an, e2.an) AS an
+       FROM view_adr_summary v
+       LEFT JOIN encounters e  ON e.id = v.encounter_id
+       LEFT JOIN encounters e2 ON e2.hn = v.hn
+                               AND e2.visit_date = v.record_date
+       WHERE v.id = ?`,
+      [req.params.id]
     );
     if (!recs[0]) return res.status(404).json({ message: `ไม่พบ record ID: ${req.params.id}` });
 
-    // symptoms detail
-    const { rows: syms } = await pool.query(
-      `SELECT s.*, t.key AS term_key, t.label AS term_label
+    const [syms] = await pool.execute(
+      `SELECT s.*, s.additional_detail, t.\`key\` AS term_key, t.label AS term_label
        FROM adr_symptoms s LEFT JOIN ctcae_terms t ON t.id = s.term_id
-       WHERE s.record_id = $1`, [req.params.id]
+       WHERE s.record_id = ?`,
+      [req.params.id]
     );
 
     res.json({ ...recs[0], symptomsDetail: syms });
@@ -432,90 +549,129 @@ app.post("/api/records", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "กรุณาระบุ hn และ record_date" });
   }
 
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
   try {
-    await client.query("BEGIN");
+    await conn.beginTransaction();
 
-    // 1. Insert header
-    const { rows: recs } = await client.query(
+    // 0. ถ้าไม่มี encounter_id ให้หาจาก encounters ที่ตรง hn + visit_date
+    let resolvedEncounterId = encounter_id || null;
+    if (!resolvedEncounterId) {
+      const [encRows] = await conn.execute(
+        `SELECT id FROM encounters WHERE hn = ? AND visit_date = ? ORDER BY created_at DESC LIMIT 1`,
+        [hn, record_date]
+      );
+      if (encRows[0]) resolvedEncounterId = encRows[0].id;
+    }
+
+    // 1. Insert header — MySQL: insertId แทน RETURNING id
+    const [insertResult] = await conn.execute(
       `INSERT INTO adr_records
          (encounter_id, hn, record_date, cycle, dose, dose_unit, note, recommendation, follow_up_date, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-      [encounter_id, hn, record_date, cycle, dose, dose_unit, note, recommendation, follow_up_date, req.user.id]
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [resolvedEncounterId, hn, record_date, cycle, dose, dose_unit, note, recommendation, follow_up_date, req.user.id]
     );
-    const recordId = recs[0].id;
+    const recordId = insertResult.insertId;
 
     // 2. Insert drugs
     for (const drug of (drugs || [])) {
-      await client.query(
-        "INSERT INTO adr_record_drugs (record_id, drug_name) VALUES ($1, $2)",
+      await conn.execute(
+        "INSERT INTO adr_record_drugs (record_id, drug_name) VALUES (?, ?)",
         [recordId, drug]
       );
     }
 
     // 3. Insert symptoms
-    await insertSymptoms(client, recordId, symptoms);
+    await insertSymptoms(conn, recordId, symptoms);
 
-    await client.query("COMMIT");
+    await conn.commit();
     res.status(201).json({ message: "บันทึกข้อมูลสำเร็จ", id: recordId });
   } catch (err) {
-    await client.query("ROLLBACK");
+    await conn.rollback();
     console.error("[POST /api/records]", err.message);
     res.status(500).json({ message: err.message });
   } finally {
-    client.release();
+    conn.release();
   }
 });
 
 /** PUT /api/records/:id */
 app.put("/api/records/:id", requireAuth, async (req, res) => {
   const { cycle, dose, dose_unit, drugs, symptoms, note, recommendation, follow_up_date } = req.body || {};
-  const client = await pool.connect();
+  const conn = await pool.getConnection();
   try {
-    await client.query("BEGIN");
+    await conn.beginTransaction();
 
-    const { rowCount } = await client.query(
+    const [updateResult] = await conn.execute(
       `UPDATE adr_records SET
-         cycle=$1, dose=$2, dose_unit=$3, note=$4, recommendation=$5,
-         follow_up_date=$6, updated_by=$7, updated_at=NOW()
-       WHERE id=$8`,
+         cycle=?, dose=?, dose_unit=?, note=?, recommendation=?,
+         follow_up_date=?, updated_by=?, updated_at=NOW()
+       WHERE id=?`,
       [cycle, dose, dose_unit, note, recommendation, follow_up_date, req.user.id, req.params.id]
     );
 
-    if (!rowCount) {
-      await client.query("ROLLBACK");
+    if (updateResult.affectedRows === 0) {
+      await conn.rollback();
       return res.status(404).json({ message: `ไม่พบ record ID: ${req.params.id}` });
     }
 
     // update drugs
-    await client.query("DELETE FROM adr_record_drugs WHERE record_id=$1", [req.params.id]);
+    await conn.execute("DELETE FROM adr_record_drugs WHERE record_id=?", [req.params.id]);
     for (const drug of (drugs || [])) {
-      await client.query(
-        "INSERT INTO adr_record_drugs (record_id, drug_name) VALUES ($1,$2)",
+      await conn.execute(
+        "INSERT INTO adr_record_drugs (record_id, drug_name) VALUES (?,?)",
         [req.params.id, drug]
       );
     }
 
     // update symptoms
-    await insertSymptoms(client, req.params.id, symptoms);
+    await insertSymptoms(conn, req.params.id, symptoms);
 
-    await client.query("COMMIT");
+    await conn.commit();
     res.json({ message: "อัปเดตข้อมูลสำเร็จ" });
   } catch (err) {
-    await client.query("ROLLBACK");
+    await conn.rollback();
     res.status(500).json({ message: err.message });
   } finally {
-    client.release();
+    conn.release();
+  }
+});
+
+/** POST /api/records/backfill-encounters */
+app.post("/api/records/backfill-encounters", requireAuth, requirePharmacist, async (req, res) => {
+  try {
+    const [nullRecs] = await pool.execute(
+      `SELECT id, hn, record_date FROM adr_records WHERE encounter_id IS NULL`
+    );
+
+    let fixed = 0;
+    for (const rec of nullRecs) {
+      const [enc] = await pool.execute(
+        `SELECT id FROM encounters WHERE hn = ? AND visit_date = ? ORDER BY created_at DESC LIMIT 1`,
+        [rec.hn, rec.record_date]
+      );
+      if (enc[0]) {
+        await pool.execute(
+          `UPDATE adr_records SET encounter_id = ? WHERE id = ?`,
+          [enc[0].id, rec.id]
+        );
+        fixed++;
+      }
+    }
+
+    res.json({ message: `backfill เสร็จ: แก้ไข ${fixed} / ${nullRecs.length} record` });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
 /** DELETE /api/records/:id */
 app.delete("/api/records/:id", requireAuth, requirePharmacist, async (req, res) => {
   try {
-    const { rowCount } = await pool.query(
-      "DELETE FROM adr_records WHERE id=$1", [req.params.id]
+    const [result] = await pool.execute(
+      "DELETE FROM adr_records WHERE id=?", [req.params.id]
     );
-    if (!rowCount) return res.status(404).json({ message: `ไม่พบ record ID: ${req.params.id}` });
+    if (result.affectedRows === 0)
+      return res.status(404).json({ message: `ไม่พบ record ID: ${req.params.id}` });
     res.json({ message: "ลบข้อมูลสำเร็จ" });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -528,47 +684,48 @@ app.delete("/api/records/:id", requireAuth, requirePharmacist, async (req, res) 
 
 /** GET /api/stats?month=YYYY-MM */
 app.get("/api/stats", requireAuth, async (req, res) => {
-  const month = req.query.month || new Date().toISOString().slice(0, 7);
+  const now = new Date();
+  const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const month = req.query.month || defaultMonth;
   const [y, m] = month.split("-").map(Number);
   const prevDate  = new Date(y, m - 2, 1);
   const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
   try {
-    // current month summary
-    const { rows: cur } = await pool.query(
+    // MySQL: DATE_FORMAT แทน TO_CHAR
+    // MySQL: SUM(CASE...) แทน COUNT(*) FILTER
+    const [cur] = await pool.execute(
       `SELECT
-         COUNT(DISTINCT r.id)                                AS total_records,
-         COUNT(DISTINCT r.hn)                               AS unique_patients,
-         COUNT(s.id)                                        AS total_adr_events,
-         COUNT(s.id) FILTER (WHERE s.grade >= 3)           AS grade3_plus_events,
-         COALESCE(SUM(CASE WHEN s.grade=1 THEN 1 ELSE 0 END),0) AS g1,
-         COALESCE(SUM(CASE WHEN s.grade=2 THEN 1 ELSE 0 END),0) AS g2,
-         COALESCE(SUM(CASE WHEN s.grade=3 THEN 1 ELSE 0 END),0) AS g3,
-         COALESCE(SUM(CASE WHEN s.grade=4 THEN 1 ELSE 0 END),0) AS g4,
-         COALESCE(SUM(CASE WHEN s.grade=5 THEN 1 ELSE 0 END),0) AS g5
+         COUNT(DISTINCT r.id)                                              AS total_records,
+         COUNT(DISTINCT r.hn)                                             AS unique_patients,
+         COUNT(s.id)                                                      AS total_adr_events,
+         SUM(CASE WHEN s.grade >= 3 THEN 1 ELSE 0 END)                  AS grade3_plus_events,
+         COALESCE(SUM(CASE WHEN s.grade=1 THEN 1 ELSE 0 END),0)        AS g1,
+         COALESCE(SUM(CASE WHEN s.grade=2 THEN 1 ELSE 0 END),0)        AS g2,
+         COALESCE(SUM(CASE WHEN s.grade=3 THEN 1 ELSE 0 END),0)        AS g3,
+         COALESCE(SUM(CASE WHEN s.grade=4 THEN 1 ELSE 0 END),0)        AS g4,
+         COALESCE(SUM(CASE WHEN s.grade=5 THEN 1 ELSE 0 END),0)        AS g5
        FROM adr_records r
        LEFT JOIN adr_symptoms s ON s.record_id = r.id
-       WHERE TO_CHAR(r.record_date,'YYYY-MM') = $1`,
+       WHERE DATE_FORMAT(r.record_date,'%Y-%m') = ?`,
       [month]
     );
 
-    // previous month
-    const { rows: prev } = await pool.query(
+    const [prev] = await pool.execute(
       `SELECT COUNT(DISTINCT r.id) AS total_records,
-              COUNT(s.id) FILTER (WHERE s.grade IS NOT NULL) AS total_adr_events
+              SUM(CASE WHEN s.grade IS NOT NULL THEN 1 ELSE 0 END) AS total_adr_events
        FROM adr_records r
        LEFT JOIN adr_symptoms s ON s.record_id = r.id
-       WHERE TO_CHAR(r.record_date,'YYYY-MM') = $1`,
+       WHERE DATE_FORMAT(r.record_date,'%Y-%m') = ?`,
       [prevMonth]
     );
 
-    // top symptoms (current month)
-    const { rows: topSymptoms } = await pool.query(
+    const [topSymptoms] = await pool.execute(
       `SELECT COALESCE(t.label, s.custom_label, s.custom_key) AS name, COUNT(*) AS count
        FROM adr_symptoms s
        JOIN adr_records r ON r.id = s.record_id
        LEFT JOIN ctcae_terms t ON t.id = s.term_id
-       WHERE TO_CHAR(r.record_date,'YYYY-MM') = $1
+       WHERE DATE_FORMAT(r.record_date,'%Y-%m') = ?
        GROUP BY name ORDER BY count DESC LIMIT 10`,
       [month]
     );
@@ -578,23 +735,22 @@ app.get("/api/stats", requireAuth, async (req, res) => {
     for (let i = 5; i >= 0; i--) {
       const d  = new Date(y, m - 1 - i, 1);
       const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      const { rows: t } = await pool.query(
-        `SELECT COUNT(DISTINCT r.id) AS total_records,
-                COUNT(s.id) FILTER (WHERE s.grade IS NOT NULL) AS total_adr,
-                COUNT(s.id) FILTER (WHERE s.grade >= 3)        AS grade3_events
+      const [t] = await pool.execute(
+        `SELECT COUNT(DISTINCT r.id)                                        AS total_records,
+                SUM(CASE WHEN s.grade IS NOT NULL THEN 1 ELSE 0 END)      AS total_adr,
+                SUM(CASE WHEN s.grade >= 3 THEN 1 ELSE 0 END)             AS grade3_events
          FROM adr_records r
          LEFT JOIN adr_symptoms s ON s.record_id = r.id
-         WHERE TO_CHAR(r.record_date,'YYYY-MM') = $1`,
+         WHERE DATE_FORMAT(r.record_date,'%Y-%m') = ?`,
         [ym]
       );
       trend.push({ month: ym, ...t[0] });
     }
 
-    // all-time
-    const { rows: allTime } = await pool.query(
-      `SELECT COUNT(DISTINCT r.id) AS total_records,
-              COUNT(s.id) FILTER (WHERE s.grade IS NOT NULL) AS total_adr,
-              COUNT(s.id) FILTER (WHERE s.grade >= 3)        AS grade3_events
+    const [allTime] = await pool.execute(
+      `SELECT COUNT(DISTINCT r.id)                                        AS total_records,
+              SUM(CASE WHEN s.grade IS NOT NULL THEN 1 ELSE 0 END)      AS total_adr,
+              SUM(CASE WHEN s.grade >= 3 THEN 1 ELSE 0 END)             AS grade3_events
        FROM adr_records r
        LEFT JOIN adr_symptoms s ON s.record_id = r.id`
     );
@@ -602,7 +758,7 @@ app.get("/api/stats", requireAuth, async (req, res) => {
     const c = cur[0];
     const totalRecords = Number(c.total_records);
     const totalADR     = Number(c.total_adr_events);
-    const grade3Events = Number(c.grade3_plus_events);
+    const grade3Events = Number(c.grade3_plus_events || 0);
 
     res.json({
       month,
@@ -633,6 +789,61 @@ app.get("/api/stats", requireAuth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
+//  REPORT
+// ─────────────────────────────────────────────
+
+/** GET /api/report/available-years */
+app.get("/api/report/available-years", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT DISTINCT YEAR(record_date) AS year
+       FROM adr_records
+       ORDER BY year DESC`
+    );
+    res.json(rows.map((r) => r.year));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/** GET /api/report/symptoms?year=&month= */
+app.get("/api/report/symptoms", requireAuth, async (req, res) => {
+  const { year, month } = req.query;
+  const conditions = [];
+  const params     = [];
+
+  if (year) {
+    conditions.push("YEAR(r.record_date) = ?");
+    params.push(Number(year));
+  }
+  if (month) {
+    conditions.push("DATE_FORMAT(r.record_date, '%Y-%m') = ?");
+    params.push(month);
+  }
+
+  const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
+
+  try {
+    const [rows] = await pool.execute(
+      `SELECT
+         COALESCE(t.label, s.custom_label, s.custom_key) AS symptom,
+         s.grade,
+         COUNT(*) AS count
+       FROM adr_symptoms s
+       JOIN adr_records r ON r.id = s.record_id
+       LEFT JOIN ctcae_terms t ON t.id = s.term_id
+       ${where}
+       GROUP BY symptom, s.grade
+       ORDER BY symptom, s.grade`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
 //  Error handlers
 // ─────────────────────────────────────────────
 
@@ -651,6 +862,6 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log("─────────────────────────────────");
   console.log(`  ADR-T Backend  →  port ${PORT}`);
-  console.log(`  DB             →  ${process.env.PGHOST || "localhost"}/${process.env.PGDATABASE || "adrt_db"}`);
+  console.log(`  DB             →  ${process.env.DB_HOST || "localhost"}/${process.env.DB_NAME || "adrt_db"}`);
   console.log("─────────────────────────────────");
 });

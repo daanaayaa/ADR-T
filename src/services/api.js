@@ -275,10 +275,11 @@ export function buildRecordPayload({ patient, encounter, vital, symptoms, note, 
     if (!grade) return;
     normSymptoms[key] = {
       grade,
-      description: (typeof val === "object" ? val.description : undefined) || "",
-      label:       (typeof val === "object" ? val.label       : undefined) || key,
-      note:        (typeof val === "object" ? val.note        : undefined) || "",
-      isCustom:    (typeof val === "object" ? val.isCustom    : false),
+      description:      (typeof val === "object" ? val.description      : undefined) || "",
+      label:            (typeof val === "object" ? val.label             : undefined) || key,
+      note:             (typeof val === "object" ? val.note              : undefined) || "",
+      isCustom:         (typeof val === "object" ? val.isCustom          : false),
+      additionalDetail: (typeof val === "object" ? val.additionalDetail  : undefined) || "",
     };
   });
 
@@ -321,6 +322,12 @@ export function hasADR(record) {
     return true;
   });
 }
+
+export const drugsApi = {
+  getAll: () => get("/api/drugs"),
+  /** เพิ่มยานอกบัญชีใหม่ (บันทึกลง DB ถาวร) */
+  create: (name) => post("/api/drugs", { name }),
+};
 
 /**
  * นับจำนวนอาการที่ grade >= 3
